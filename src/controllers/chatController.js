@@ -1,0 +1,216 @@
+const Message = require('../models/Message');
+
+/**
+ * Get all chat messages involving the authenticated user
+ */
+exports.getMessages = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+
+    const messages = await Message.find({
+      $or: [
+        { senderId: currentUserId, deletedBySender: { $ne: true } },
+        { receiverId: currentUserId, deletedByReceiver: { $ne: true } }
+      ]
+    }).sort({ createdAt: 1 });
+
+    return res.status(200).json(messages);
+  } catch (error) {
+    console.error('Fetch all messages error:', error);
+    return res.status(500).json({ message: 'Server error while fetching messages.' });
+  }
+};
+
+/**
+ * Get all chat messages between the authenticated user and the selected user
+ */
+exports.getChatMessages = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+    const { selectedUserId } = req.params;
+
+    const messages = await Message.find({
+      $or: [
+        { senderId: currentUserId, receiverId: selectedUserId, deletedBySender: { $ne: true } },
+        { senderId: selectedUserId, receiverId: currentUserId, deletedByReceiver: { $ne: true } }
+      ]
+    }).sort({ createdAt: 1 });
+
+    return res.status(200).json(messages);
+  } catch (error) {
+    console.error('Fetch messages with user error:', error);
+    return res.status(500).json({ message: 'Server error while fetching messages.' });
+  }
+};
+
+/**
+ * Edit a text message sent by the authenticated user
+ */
+exports.editMessage = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+    const { messageId } = req.params;
+    const { text } = req.body;
+
+    if (!text || text.trim() === '') {
+      return res.status(400).json({ message: 'Message text cannot be empty.' });
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found.' });
+    }
+
+    if (message.senderId.toString() !== currentUserId.toString()) {
+      return res.status(403).json({ message: 'You are not authorized to edit this message.' });
+    }
+
+    message.text = text;
+    message.isEdited = true;
+    await message.save();
+
+    const io = req.app.get('io');
+    if (io && global.onlineUsers) {
+      const receiverId = message.receiverId.toString();
+      const receiverSocketId = global.onlineUsers.get(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit('message_edited', {
+          messageId: messageId.toString(),
+          text: message.text,
+          isEdited: true,
+          senderId: currentUserId.toString(),
+          receiverId
+        });
+      }
+    }
+
+    return res.status(200).json({ message: 'Message updated successfully.', message });
+  } catch (error) {
+    console.error('Edit message error:', error);
+    return res.status(500).json({ message: 'Server error while editing message.' });
+  }
+};
+
+/**
+ * Delete a message sent by the authenticated user
+ */
+exports.deleteMessage = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+    const { messageId } = req.params;
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found.' });
+    }
+
+    if (message.senderId.toString() !== currentUserId.toString()) {
+      return res.status(403).json({ message: 'You are not authorized to delete this message.' });
+    }
+
+    const receiverId = message.receiverId.toString();
+    await Message.findByIdAndDelete(messageId);
+
+    const io = req.app.get('io');
+    if (io && global.onlineUsers) {
+      const receiverSocketId = global.onlineUsers.get(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit('message_deleted', {
+          messageId: messageId.toString(),
+          senderId: currentUserId.toString(),
+          receiverId
+        });
+      }
+    }
+
+    return res.status(200).json({ message: 'Message deleted successfully.', messageId });
+  } catch (error) {
+    console.error('Delete message error:', error);
+    return res.status(500).json({ message: 'Server error while deleting message.' });
+  }
+};
+
+/**
+ * Clear all chat messages (conversations) globally for the authenticated user
+ */
+exports.clearAllChats = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+
+    await Message.updateMany(
+      { senderId: currentUserId },
+      { $set: { deletedBySender: true } }
+    );
+
+    await Message.updateMany(
+      { receiverId: currentUserId },
+      { $set: { deletedByReceiver: true } }
+    );
+
+    await Message.deleteMany({
+      deletedBySender: true,
+      deletedByReceiver: true
+    });
+
+    return res.status(200).json({ message: 'All conversations cleared successfully.' });
+  } catch (error) {
+    console.error('Clear all conversations error:', error);
+    return res.status(500).json({ message: 'Server error while clearing conversations.' });
+  }
+};
+
+/**
+ * Clear all chat messages between the authenticated user and a specific user
+ */
+exports.clearChat = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+    const { selectedUserId } = req.params;
+
+    await Message.updateMany(
+      { senderId: currentUserId, receiverId: selectedUserId },
+      { $set: { deletedBySender: true } }
+    );
+
+    await Message.updateMany(
+      { senderId: selectedUserId, receiverId: currentUserId },
+      { $set: { deletedByReceiver: true } }
+    );
+
+    await Message.deleteMany({
+      senderId: { $in: [currentUserId, selectedUserId] },
+      receiverId: { $in: [currentUserId, selectedUserId] },
+      deletedBySender: true,
+      deletedByReceiver: true
+    });
+
+    return res.status(200).json({ message: 'Chat history cleared successfully.' });
+  } catch (error) {
+    console.error('Clear chat error:', error);
+    return res.status(500).json({ message: 'Server error while clearing chat.' });
+  }
+};
+
+/**
+ * Upload chat media
+ */
+exports.uploadChatMedia = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded.' });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const fileUrl = `${baseUrl}/uploads/${req.file.filename}`;
+
+    return res.status(200).json({
+      message: 'Chat media uploaded successfully',
+      url: fileUrl,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+    });
+  } catch (error) {
+    console.error('Chat media upload error:', error);
+    return res.status(500).json({ message: 'Server error during chat media upload.' });
+  }
+};

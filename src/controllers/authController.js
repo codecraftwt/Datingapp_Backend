@@ -1,0 +1,315 @@
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const Message = require('../models/Message');
+const Match = require('../models/Match');
+
+/**
+ * Register a new user
+ */
+exports.register = async (req, res) => {
+  try {
+    const { name, email, mobile, password, confirmPassword, gender } = req.body;
+
+    if (!name || !email || !mobile || !password || !confirmPassword || !gender) {
+      return res.status(400).json({ message: 'All fields are required.' });
+    }
+
+    if (password !== confirmPassword) {
+      return res.status(400).json({ message: 'Passwords do not match.' });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters long.' });
+    }
+
+    if (gender !== 'Male' && gender !== 'Women' && gender !== 'Female' && gender !== 'Non-binary') {
+      return res.status(400).json({ message: 'Gender must be Male, Women, Female, or Non-binary.' });
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists with this email.' });
+    }
+
+    const existingMobile = await User.findOne({ mobile });
+    if (existingMobile) {
+      return res.status(400).json({ message: 'User already exists with this mobile number.' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const newUser = new User({
+      name,
+      email,
+      mobile,
+      password: hashedPassword,
+      gender,
+      isLoggedIn: true,
+    });
+
+    await newUser.save();
+
+    const token = jwt.sign(
+      { userId: newUser._id },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '7d' }
+    );
+
+    return res.status(201).json({
+      message: 'User registered successfully',
+      token,
+      user: {
+        id: newUser._id,
+        name: newUser.name,
+        email: newUser.email,
+        mobile: newUser.mobile,
+        gender: newUser.gender,
+        bio: newUser.bio || '',
+      },
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    return res.status(500).json({ message: 'Server error during registration.' });
+  }
+};
+
+/**
+ * Authenticate user & get token
+ */
+exports.login = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email and password are required.' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid email or password.' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid email or password.' });
+    }
+
+    const token = jwt.sign(
+      { userId: user._id },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '7d' }
+    );
+
+    user.isLoggedIn = true;
+    await user.save();
+
+    return res.status(200).json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        mobile: user.mobile,
+        gender: user.gender,
+        firstName: user.firstName,
+        bdayDay: user.bdayDay,
+        bdayMonth: user.bdayMonth,
+        bdayYear: user.bdayYear,
+        age: user.age,
+        orientation: user.orientation,
+        drinkHabit: user.drinkHabit,
+        smokeHabit: user.smokeHabit,
+        exercise: user.exercise,
+        pets: user.pets,
+        educationLevel: user.educationLevel,
+        zodiac: user.zodiac,
+        interests: user.interests,
+        interestedIn: user.interestedIn,
+        lookingFor: user.lookingFor,
+        ageRangeMin: user.ageRangeMin,
+        ageRangeMax: user.ageRangeMax,
+        distanceRange: user.distanceRange,
+        profileImage: user.profileImage,
+        bio: user.bio || '',
+      },
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    return res.status(500).json({ message: 'Server error during login.' });
+  }
+};
+
+/**
+ * Log user out (sets isLoggedIn to false)
+ */
+exports.logout = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const lastSeenDate = new Date();
+
+    const user = await User.findById(userId);
+    if (user) {
+      user.isLoggedIn = false;
+      user.lastSeen = lastSeenDate;
+      await user.save();
+    }
+
+    if (global.onlineUsers) {
+      global.onlineUsers.delete(userId.toString());
+    }
+
+    const io = req.app ? req.app.get('io') : null;
+    if (io) {
+      io.emit('user_status', {
+        userId: userId.toString(),
+        status: 'offline',
+        lastSeen: lastSeenDate.toISOString(),
+      });
+    }
+
+    return res.status(200).json({ message: 'Logged out successfully' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    return res.status(500).json({ message: 'Server error during logout.' });
+  }
+};
+
+/**
+ * Generate a 6-digit password reset code
+ */
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required.' });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({ message: 'User with this email does not exist.' });
+    }
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+    user.resetPasswordToken = code;
+    user.resetPasswordExpires = Date.now() + 15 * 60 * 1000;
+    await user.save();
+
+    return res.status(200).json({
+      message: 'Password reset code generated successfully.',
+      code: code
+    });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    return res.status(500).json({ message: 'Server error during forgot password.' });
+  }
+};
+
+/**
+ * Verify 6-digit code and reset password
+ */
+exports.resetPassword = async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ message: 'Email, code, and new password are required.' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters long.' });
+    }
+
+    const user = await User.findOne({
+      email: email.toLowerCase(),
+      resetPasswordToken: code,
+      resetPasswordExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid or expired verification code.' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(newPassword, salt);
+
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+
+    await user.save();
+
+    return res.status(200).json({ message: 'Password reset successfully.' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    return res.status(500).json({ message: 'Server error during password reset.' });
+  }
+};
+
+/**
+ * Change user password (authenticated)
+ */
+exports.changePassword = async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body;
+    const currentUserId = req.user._id;
+
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ message: 'Both old password and new password are required.' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: 'New password must be at least 8 characters long.' });
+    }
+
+    const user = await User.findById(currentUserId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const isMatch = await bcrypt.compare(oldPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Incorrect current password.' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(newPassword, salt);
+    await user.save();
+
+    return res.status(200).json({ message: 'Password updated successfully.' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    return res.status(500).json({ message: 'Server error while changing password.' });
+  }
+};
+
+/**
+ * Delete account (clean matches & messages)
+ */
+exports.deleteAccount = async (req, res) => {
+  try {
+    const currentUserId = req.user._id;
+
+    await Match.deleteMany({
+      $or: [
+        { likerId: currentUserId },
+        { likedId: currentUserId }
+      ]
+    });
+
+    await Message.deleteMany({
+      $or: [
+        { senderId: currentUserId },
+        { receiverId: currentUserId }
+      ]
+    });
+
+    await User.findByIdAndDelete(currentUserId);
+
+    return res.status(200).json({ message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('Delete account error:', error);
+    return res.status(500).json({ message: 'Server error during account deletion.' });
+  }
+};

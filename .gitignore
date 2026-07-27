@@ -1,0 +1,39 @@
+# ==========================================
+# Backend Environment & Secret Files
+# ==========================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ==========================================
+# Node.js Dependencies & Logs
+# ==========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+*.log
+
+# ==========================================
+# User Uploads
+# ==========================================
+uploads/*
+!uploads/.gitkeep
+
+# ==========================================
+# Operating System & IDE Files
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ==========================================
+# Postman Collections & Environments
+# ==========================================
+Dating_App_Postman_Collection.json
+*.postman_collection.json
+*.postman_environment.json
