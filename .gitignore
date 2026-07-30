@@ -31,9 +31,5 @@ Thumbs.db
 .vscode/
 .idea/
 
-# ==========================================
-# Postman Collections & Environments
-# ==========================================
+# Postman collection
 Dating_App_Postman_Collection.json
-*.postman_collection.json
-*.postman_environment.json

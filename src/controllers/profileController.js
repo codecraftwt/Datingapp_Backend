@@ -178,24 +178,6 @@ exports.updateLocation = async (req, res) => {
     let longitude = req.body.longitude ?? req.body.lng ?? req.body.coords?.longitude;
 
     if (latitude === undefined || longitude === undefined) {
-      console.log('ℹ️ [BACKEND LOCATION] Latitude/Longitude missing in body. Attempting IP fallback...');
-      try {
-        const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
-        const ipRes = await fetch(`http://ip-api.com/json/${clientIp}`);
-        if (ipRes.ok) {
-          const ipData = await ipRes.json();
-          if (ipData && ipData.status === 'success' && typeof ipData.lat === 'number' && typeof ipData.lon === 'number') {
-            latitude = ipData.lat;
-            longitude = ipData.lon;
-            console.log(`✅ [BACKEND IP GEO] Resolved IP ${clientIp} to [lat: ${latitude}, lng: ${longitude}]`);
-          }
-        }
-      } catch (ipErr) {
-        console.log('⚠️ [BACKEND IP GEO ERROR]', ipErr.message || ipErr);
-      }
-    }
-
-    if (latitude === undefined || longitude === undefined) {
       return res.status(400).json({ message: 'Latitude and longitude are required.' });
     }
 
