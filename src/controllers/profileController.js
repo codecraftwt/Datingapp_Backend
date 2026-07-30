@@ -31,6 +31,10 @@ exports.saveQuestionnaire = async (req, res) => {
       pets,
       educationLevel,
       zodiac,
+      height,
+      weight,
+      job,
+      college,
       interests,
       interestedIn,
       lookingFor,
@@ -75,6 +79,10 @@ exports.saveQuestionnaire = async (req, res) => {
       pets,
       educationLevel,
       zodiac,
+      height,
+      weight,
+      job,
+      college,
       interests,
       interestedIn,
       lookingFor,
@@ -133,6 +141,10 @@ exports.saveQuestionnaire = async (req, res) => {
         pets: updatedUser.pets,
         educationLevel: updatedUser.educationLevel,
         zodiac: updatedUser.zodiac,
+        height: updatedUser.height,
+        weight: updatedUser.weight,
+        job: updatedUser.job,
+        college: updatedUser.college,
         interests: updatedUser.interests,
         interestedIn: updatedUser.interestedIn,
         lookingFor: updatedUser.lookingFor,
@@ -418,6 +430,10 @@ exports.getQuestionnaires = async (req, res) => {
           pets: u.pets || 'Dog',
           educationLevel: u.educationLevel || 'Undergraduate Degree',
           zodiac: u.zodiac || 'Gemini',
+          height: u.height,
+          weight: u.weight,
+          job: u.job,
+          college: u.college,
           isOnline: (u.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has((u._id || u.id).toString()) : false),
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
@@ -454,6 +470,10 @@ exports.getProfile = async (req, res) => {
         pets: req.user.pets,
         educationLevel: req.user.educationLevel,
         zodiac: req.user.zodiac,
+        height: req.user.height,
+        weight: req.user.weight,
+        job: req.user.job,
+        college: req.user.college,
         interests: req.user.interests,
         interestedIn: req.user.interestedIn,
         lookingFor: req.user.lookingFor,
@@ -501,6 +521,10 @@ exports.getOnlineUsers = async (req, res) => {
         pets: u.pets || 'Dog',
         educationLevel: u.educationLevel || 'Undergraduate Degree',
         zodiac: u.zodiac || 'Gemini',
+        height: u.height,
+        weight: u.weight,
+        job: u.job,
+        college: u.college,
       }))
     });
   } catch (error) {
@@ -640,6 +664,10 @@ exports.removeProfile = async (req, res) => {
     user.pets = undefined;
     user.educationLevel = undefined;
     user.zodiac = undefined;
+    user.height = undefined;
+    user.weight = undefined;
+    user.job = undefined;
+    user.college = undefined;
     user.interests = [];
     user.interestedIn = undefined;
     user.lookingFor = undefined;

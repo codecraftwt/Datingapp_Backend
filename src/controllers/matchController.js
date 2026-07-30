@@ -122,6 +122,10 @@ exports.getLikes = async (req, res) => {
         pets: u.pets || 'Dog',
         educationLevel: u.educationLevel || 'Undergraduate Degree',
         zodiac: u.zodiac || 'Gemini',
+        height: u.height,
+        weight: u.weight,
+        job: u.job,
+        college: u.college,
       }))
     });
   } catch (error) {
@@ -169,6 +173,10 @@ exports.getMatches = async (req, res) => {
         pets: u.pets || 'Dog',
         educationLevel: u.educationLevel || 'Undergraduate Degree',
         zodiac: u.zodiac || 'Gemini',
+        height: u.height,
+        weight: u.weight,
+        job: u.job,
+        college: u.college,
         isOnline: (u.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false),
         lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
       }))
