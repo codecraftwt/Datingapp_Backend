@@ -142,6 +142,130 @@ exports.likeUser = async (req, res) => {
   }
 };
 
+/**
+ * Dedicated API: Super Like a user profile (1 per 24 hours)
+ */
+exports.superLikeUser = async (req, res) => {
+  try {
+    const likedId = req.body.likedId || req.body.targetUserId || req.body.userId;
+    const currentUserId = req.user._id;
+
+    if (!likedId) {
+      return res.status(400).json({ message: 'Liked user ID is required.' });
+    }
+
+    if (likedId.toString() === currentUserId.toString()) {
+      return res.status(400).json({ message: 'You cannot Super Like yourself.' });
+    }
+
+    // Check if either user has blocked the other
+    const isBlocked = await Block.findOne({
+      $or: [
+        { blockerId: currentUserId, blockedId: likedId },
+        { blockerId: likedId, blockedId: currentUserId }
+      ]
+    });
+
+    if (isBlocked) {
+      return res.status(400).json({ message: 'Cannot Super Like this profile.' });
+    }
+
+    // Daily 24-hour limit check (1 per 24 hours)
+    const currentUserDoc = await User.findById(currentUserId).select('lastSuperLikeDate');
+    const now = new Date();
+    if (currentUserDoc?.lastSuperLikeDate) {
+      const lastDate = new Date(currentUserDoc.lastSuperLikeDate);
+      const diffMs = now.getTime() - lastDate.getTime();
+      const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+      if (diffMs < twentyFourHoursMs) {
+        const hoursLeft = Math.ceil((twentyFourHoursMs - diffMs) / (60 * 60 * 1000));
+        return res.status(400).json({
+          message: `You have used your 1 free Super Like for today. Try again in ${hoursLeft} hour${hoursLeft > 1 ? 's' : ''}.`,
+          canSuperLike: false,
+          hoursUntilReset: hoursLeft
+        });
+      }
+    }
+
+    // Update lastSuperLikeDate to current timestamp
+    await User.findByIdAndUpdate(currentUserId, { lastSuperLikeDate: now });
+
+    const existingLike = await Match.findOne({
+      likerId: currentUserId,
+      likedId: likedId
+    });
+
+    if (!existingLike) {
+      const newLike = new Match({
+        likerId: currentUserId,
+        likedId: likedId,
+        isSuperLike: true,
+      });
+      await newLike.save();
+    } else if (!existingLike.isSuperLike) {
+      existingLike.isSuperLike = true;
+      await existingLike.save();
+    }
+
+    const reverseLike = await Match.findOne({
+      likerId: likedId,
+      likedId: currentUserId
+    });
+
+    const isMatch = !!reverseLike;
+
+    const currentUser = await User.findById(currentUserId).select('firstName name');
+    const targetUser = await User.findById(likedId).select('firstName name');
+    const senderName = currentUser?.firstName || currentUser?.name || 'Someone';
+    const targetName = targetUser?.firstName || targetUser?.name || 'Someone';
+
+    if (isMatch) {
+      sendPushNotification(likedId, {
+        title: `🎉 It's a Match with ${senderName}!`,
+        body: `You and ${senderName} liked each other! Start chatting now.`,
+        data: { type: 'match', userId: currentUserId.toString() }
+      }).catch(err => console.error('Match push error:', err));
+
+      sendPushNotification(currentUserId, {
+        title: `🎉 It's a Match with ${targetName}!`,
+        body: `You and ${targetName} liked each other! Start chatting now.`,
+        data: { type: 'match', userId: likedId.toString() }
+      }).catch(err => console.error('Match push error:', err));
+    } else {
+      sendPushNotification(likedId, {
+        title: `⭐ ${senderName} Super Liked your profile!`,
+        body: `${senderName} Super Liked your profile! Open the app to see them at the top of your Likes.`,
+        data: { type: 'superlike', userId: currentUserId.toString() }
+      }).catch(err => console.error('Super Like push error:', err));
+
+      if (global.io && global.onlineUsers) {
+        const likedSocketId = global.onlineUsers.get(likedId.toString());
+        if (likedSocketId) {
+          global.io.to(likedSocketId).emit('new_like', {
+            likerUser: {
+              id: currentUser._id.toString(),
+              name: currentUser.firstName || currentUser.name,
+              profileImage: currentUser.profileImage || '',
+              isSuperLike: true,
+            },
+            title: `⭐ ${senderName} Super Liked your profile!`,
+            body: `${senderName} Super Liked your profile! Open the app to see them at the top of your Likes.`
+          });
+        }
+      }
+    }
+
+    return res.status(200).json({
+      message: isMatch ? 'Mutual match registered!' : 'Super Like registered successfully!',
+      isMatch,
+      isSuperLike: true,
+    });
+  } catch (error) {
+    console.error('Super Like user error:', error);
+    return res.status(500).json({ message: 'Server error while Super Liking user.' });
+  }
+};
+
 function getUserCoordinates(user) {
   if (!user) return null;
   const sources = [
@@ -200,7 +324,6 @@ exports.getLikes = async (req, res) => {
   try {
     const currentUserId = req.user._id;
 
-
     const blockedIds = await getBlockedUserIds(currentUserId);
     const currentUser = await User.findById(currentUserId);
     const currentUserCoords = getUserCoordinates(currentUser);
@@ -209,6 +332,14 @@ exports.getLikes = async (req, res) => {
       likedId: currentUserId,
       likerId: { $nin: blockedIds }
     });
+
+    const superLikerMap = {};
+    peopleWhoLikedMe.forEach((m) => {
+      if (m.isSuperLike) {
+        superLikerMap[m.likerId.toString()] = true;
+      }
+    });
+
     const likerIds = peopleWhoLikedMe.map(l => l.likerId);
 
     const peopleILiked = await Match.find({ likerId: currentUserId });
@@ -220,37 +351,81 @@ exports.getLikes = async (req, res) => {
       _id: { $in: finalLikerIds, $nin: blockedIds }
     });
 
+    const mappedUsers = users.map(u => {
+      const targetUserCoords = getUserCoordinates(u);
+      const isSuper = !!superLikerMap[u._id.toString()];
+      return {
+        id: u._id.toString(),
+        name: u.firstName || u.name,
+        email: u.email,
+        age: u.age || null,
+        distance: formatDistanceText(currentUserCoords, targetUserCoords, u.distanceRange),
+        bio: u.bio || '',
+        interests: u.interests || [],
+        image: u.profileImage || '',
+        gender: u.gender,
+        orientation: u.orientation || '',
+        lookingFor: u.lookingFor || '',
+        drinkHabit: u.drinkHabit || '',
+        smokeHabit: u.smokeHabit || '',
+        exercise: u.exercise || '',
+        pets: u.pets || '',
+        educationLevel: u.educationLevel || '',
+        zodiac: u.zodiac || '',
+        height: u.height || '',
+        weight: u.weight || '',
+        job: u.job || '',
+        college: u.college || '',
+        isSuperLike: isSuper,
+      };
+    });
+
+    // Sort Super Liked users to the top of the list!
+    mappedUsers.sort((a, b) => (b.isSuperLike ? 1 : 0) - (a.isSuperLike ? 1 : 0));
+
     return res.status(200).json({
-      users: users.map(u => {
-        const targetUserCoords = getUserCoordinates(u);
-        return {
-          id: u._id.toString(),
-          name: u.firstName || u.name,
-          email: u.email,
-          age: u.age || null,
-          distance: formatDistanceText(currentUserCoords, targetUserCoords, u.distanceRange),
-          bio: u.bio || '',
-          interests: u.interests || [],
-          image: u.profileImage || '',
-          gender: u.gender,
-          orientation: u.orientation || '',
-          lookingFor: u.lookingFor || '',
-          drinkHabit: u.drinkHabit || '',
-          smokeHabit: u.smokeHabit || '',
-          exercise: u.exercise || '',
-          pets: u.pets || '',
-          educationLevel: u.educationLevel || '',
-          zodiac: u.zodiac || '',
-          height: u.height || '',
-          weight: u.weight || '',
-          job: u.job || '',
-          college: u.college || '',
-        };
-      })
+      users: mappedUsers
     });
   } catch (error) {
-    console.error('Fetch likes error:', error);
+    console.error('Get likes error:', error);
     return res.status(500).json({ message: 'Server error while fetching likes.' });
+  }
+};
+
+/**
+ * Get current user's Super Like availability status & reset timer
+ */
+exports.getSuperLikeStatus = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('lastSuperLikeDate');
+    const now = new Date();
+
+    let canSuperLike = true;
+    let secondsUntilReset = 0;
+
+    if (user?.lastSuperLikeDate) {
+      const lastDate = new Date(user.lastSuperLikeDate);
+      const diffMs = now.getTime() - lastDate.getTime();
+      const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+
+      if (diffMs < twentyFourHoursMs) {
+        canSuperLike = false;
+        secondsUntilReset = Math.ceil((twentyFourHoursMs - diffMs) / 1000);
+      }
+    }
+
+    const hoursUntilReset = Math.ceil(secondsUntilReset / 3600);
+
+    return res.status(200).json({
+      canSuperLike,
+      remainingSuperLikes: canSuperLike ? 1 : 0,
+      lastSuperLikeDate: user?.lastSuperLikeDate || null,
+      secondsUntilReset,
+      hoursUntilReset,
+    });
+  } catch (error) {
+    console.error('getSuperLikeStatus Error:', error);
+    return res.status(500).json({ message: 'Server error checking superlike status.' });
   }
 };
 

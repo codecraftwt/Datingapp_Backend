@@ -47,6 +47,7 @@ const UserSchema = new mongoose.Schema(
     job: { type: String, trim: true },
     college: { type: String, trim: true },
     interests: [{ type: String }],
+    languages: [{ type: String }],
     interestedIn: { type: String },
     lookingFor: { type: String },
     ageRangeMin: { type: Number },
@@ -101,6 +102,7 @@ const UserSchema = new mongoose.Schema(
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
     fcmToken: { type: String, default: null },
+    lastSuperLikeDate: { type: Date },
   },
   {
     // Explicitly target the collection already created by the user

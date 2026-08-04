@@ -4,7 +4,9 @@ const matchController = require('../controllers/matchController');
 const auth = require('../middleware/auth');
 
 router.post('/like', auth, matchController.likeUser);
+router.post('/superlike', auth, matchController.superLikeUser);
 router.get('/likes', auth, matchController.getLikes);
+router.get('/superlike-status', auth, matchController.getSuperLikeStatus);
 router.get('/matches', auth, matchController.getMatches);
 router.post('/reject-like', auth, matchController.rejectLike);
 router.get('/swiped-ids', auth, matchController.getSwipedIds);
