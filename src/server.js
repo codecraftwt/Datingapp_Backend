@@ -7,6 +7,8 @@ const { Server } = require('socket.io');
 const Message = require('./models/Message');
 const User = require('./models/User');
 const Block = require('./models/Block');
+const Notification = require('./models/Notification');
+const { sendPushNotification } = require('./services/pushNotificationService');
 
 require('dotenv').config({ override: true });
 
@@ -41,7 +43,26 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/Dating_App';
 mongoose
   .connect(mongoURI)
-  .then(() => console.log('Successfully connected to MongoDB.'))
+  .then(async () => {
+    console.log('Successfully connected to MongoDB.');
+    try {
+      await User.updateMany(
+        { 'currentLocation.location': { $exists: true }, 'currentLocation.location.coordinates': { $exists: false } },
+        { $unset: { currentLocation: 1 } }
+      );
+      await User.updateMany(
+        { 'permanentAddress.location': { $exists: true }, 'permanentAddress.location.coordinates': { $exists: false } },
+        { $unset: { 'permanentAddress.location': 1 } }
+      );
+      await User.updateMany(
+        { location: { $exists: true }, 'location.coordinates': { $exists: false } },
+        { $unset: { location: 1 } }
+      );
+      console.log('Successfully sanitized existing geo-location documents in database.');
+    } catch (cleanErr) {
+      console.error('Geo cleanup error:', cleanErr);
+    }
+  })
   .catch((err) => console.error('MongoDB connection error:', err));
 
 // Routes
@@ -49,12 +70,16 @@ const authRoutes = require('./routes/authRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const matchRoutes = require('./routes/matchRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const searchRoutes = require('./routes/searchRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/match', matchRoutes);
 app.use('/api/user', matchRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/search', searchRoutes);
 
 // Basic Route
 app.get('/', (req, res) => {
@@ -128,6 +153,22 @@ io.on('connection', (socket) => {
 
       // Confirm send back to sender
       socket.emit('message_sent', msgData);
+
+      // Trigger FCM Push Notification for Receiver
+      const senderUser = await User.findById(senderId).select('firstName name');
+      const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
+      const notificationText = text ? text : (mediaUrl ? '📷 Sent a media file' : '💬 Sent a message');
+
+      sendPushNotification(receiverId, {
+        title: `💬 ${senderName}`,
+        body: notificationText,
+        data: {
+          type: 'chat',
+          senderId: senderId.toString(),
+          messageId: newMessage._id.toString(),
+          notificationId: newMessage._id.toString(),
+        }
+      }).catch(err => console.error('Chat FCM push error:', err));
     } catch (err) {
       console.error('Error handling send_message socket event:', err);
     }
@@ -150,6 +191,12 @@ io.on('connection', (socket) => {
       );
 
       console.log(`Socket: Marked messages as seen between sender ${senderId} and receiver ${receiverId}. Count:`, result.modifiedCount);
+
+      // Also mark corresponding Notification records as read
+      await Notification.updateMany(
+        { recipient: receiverId, sender: senderId, isRead: false },
+        { isRead: true }
+      );
 
       // If sender is online, notify them in real-time that their messages were seen
       const senderSocketId = onlineUsers.get(senderId.toString());

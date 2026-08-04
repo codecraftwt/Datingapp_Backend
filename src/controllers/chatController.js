@@ -1,4 +1,5 @@
 const Message = require('../models/Message');
+const Notification = require('../models/Notification');
 
 /**
  * Get all chat messages involving the authenticated user
@@ -28,6 +29,17 @@ exports.getChatMessages = async (req, res) => {
   try {
     const currentUserId = req.user._id;
     const { selectedUserId } = req.params;
+
+    // Automatically mark all unread chat notifications & messages from this sender as read/seen
+    Notification.updateMany(
+      { recipient: currentUserId, sender: selectedUserId, type: 'chat', isRead: false },
+      { isRead: true }
+    ).catch(() => {});
+
+    Message.updateMany(
+      { senderId: selectedUserId, receiverId: currentUserId, status: { $ne: 'seen' } },
+      { status: 'seen' }
+    ).catch(() => {});
 
     const messages = await Message.find({
       $or: [

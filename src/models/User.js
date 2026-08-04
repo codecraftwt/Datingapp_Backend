@@ -52,6 +52,35 @@ const UserSchema = new mongoose.Schema(
     ageRangeMin: { type: Number },
     ageRangeMax: { type: Number },
     distanceRange: { type: Number },
+    // Permanent Address (Mandatory at registration)
+    permanentAddress: {
+      country: { type: String, trim: true },
+      state: { type: String, trim: true },
+      district: { type: String, trim: true },
+      city: { type: String, trim: true },
+      location: {
+        type: {
+          type: String,
+          enum: ['Point'],
+        },
+        coordinates: {
+          type: [Number], // [longitude, latitude]
+        },
+      },
+    },
+    // Temporary / Current GPS Location (Optional)
+    currentLocation: {
+      location: {
+        type: {
+          type: String,
+          enum: ['Point'],
+        },
+        coordinates: {
+          type: [Number], // [longitude, latitude]
+        },
+      },
+      updatedAt: { type: Date },
+    },
     location: {
       type: {
         type: String,
@@ -61,6 +90,8 @@ const UserSchema = new mongoose.Schema(
         type: [Number], // [longitude, latitude]
       },
     },
+    languages: [{ type: String }],
+    searchPreferences: { type: mongoose.Schema.Types.Mixed, default: {} },
     profileImage: { type: String },
     profileImages: [{ type: String }],
     completionPercentage: { type: Number, default: 0 },
@@ -69,6 +100,7 @@ const UserSchema = new mongoose.Schema(
     lastSeen: { type: Date },
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
+    fcmToken: { type: String, default: null },
   },
   {
     // Explicitly target the collection already created by the user
@@ -77,6 +109,33 @@ const UserSchema = new mongoose.Schema(
   }
 );
 
+UserSchema.pre('save', function () {
+  const isInvalidGeo = (loc) => {
+    return (
+      !loc ||
+      !loc.coordinates ||
+      !Array.isArray(loc.coordinates) ||
+      loc.coordinates.length !== 2 ||
+      typeof loc.coordinates[0] !== 'number' ||
+      typeof loc.coordinates[1] !== 'number'
+    );
+  };
+
+  if (this.location && isInvalidGeo(this.location)) {
+    this.location = undefined;
+  }
+
+  if (this.permanentAddress && this.permanentAddress.location && isInvalidGeo(this.permanentAddress.location)) {
+    this.permanentAddress.location = undefined;
+  }
+
+  if (this.currentLocation && this.currentLocation.location && isInvalidGeo(this.currentLocation.location)) {
+    this.currentLocation = undefined;
+  }
+});
+
 UserSchema.index({ location: '2dsphere' }, { sparse: true });
+UserSchema.index({ 'permanentAddress.location': '2dsphere' }, { sparse: true });
+UserSchema.index({ 'currentLocation.location': '2dsphere' }, { sparse: true });
 
 module.exports = mongoose.model('User', UserSchema);

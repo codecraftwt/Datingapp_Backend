@@ -3,6 +3,8 @@ const User = require('../models/User');
 const Message = require('../models/Message');
 const Block = require('../models/Block');
 const Report = require('../models/Report');
+const Notification = require('../models/Notification');
+const { sendPushNotification } = require('../services/pushNotificationService');
 
 /**
  * Helper to get all blocked user IDs associated with currentUserId
@@ -27,7 +29,7 @@ const getBlockedUserIds = async (currentUserId) => {
  */
 exports.likeUser = async (req, res) => {
   try {
-    const { likedId } = req.body;
+    const likedId = req.body.likedId || req.body.targetUserId || req.body.userId;
     const currentUserId = req.user._id;
 
     if (!likedId) {
@@ -70,6 +72,66 @@ exports.likeUser = async (req, res) => {
 
     const isMatch = !!reverseLike;
 
+    // --- Trigger Push Notifications ---
+    const currentUser = await User.findById(currentUserId).select('firstName name');
+    const targetUser = await User.findById(likedId).select('firstName name');
+    const senderName = currentUser?.firstName || currentUser?.name || 'Someone';
+    const targetName = targetUser?.firstName || targetUser?.name || 'Someone';
+
+    if (isMatch) {
+      // Send Mutual Match Notification to both users with names in title
+      sendPushNotification(likedId, {
+        title: `🎉 It's a Match with ${senderName}!`,
+        body: `You and ${senderName} liked each other! Start chatting now.`,
+        data: { type: 'match', userId: currentUserId.toString() }
+      }).catch(err => console.error('Match push error:', err));
+
+      sendPushNotification(currentUserId, {
+        title: `🎉 It's a Match with ${targetName}!`,
+        body: `You and ${targetName} liked each other! Start chatting now.`,
+        data: { type: 'match', userId: likedId.toString() }
+      }).catch(err => console.error('Match push error:', err));
+
+      // Emit real-time socket event if target user is online
+      if (global.io && global.onlineUsers) {
+        const likedSocketId = global.onlineUsers.get(likedId.toString());
+        if (likedSocketId) {
+          global.io.to(likedSocketId).emit('new_match', {
+            matchedUser: {
+              id: currentUser._id.toString(),
+              name: currentUser.firstName || currentUser.name,
+              profileImage: currentUser.profileImage || '',
+            },
+            title: `🎉 It's a Match with ${senderName}!`,
+            body: `You and ${senderName} liked each other! Start chatting now.`
+          });
+        }
+      }
+    } else {
+      // Send New Like Notification to likedId with sender's name
+      sendPushNotification(likedId, {
+        title: `❤️ ${senderName} liked your profile!`,
+        body: `${senderName} liked your profile. Open the app to check out their profile!`,
+        data: { type: 'like', userId: currentUserId.toString() }
+      }).catch(err => console.error('Like push error:', err));
+
+      // Emit real-time socket event if target user is online
+      if (global.io && global.onlineUsers) {
+        const likedSocketId = global.onlineUsers.get(likedId.toString());
+        if (likedSocketId) {
+          global.io.to(likedSocketId).emit('new_like', {
+            likerUser: {
+              id: currentUser._id.toString(),
+              name: currentUser.firstName || currentUser.name,
+              profileImage: currentUser.profileImage || '',
+            },
+            title: `❤️ ${senderName} liked your profile!`,
+            body: `${senderName} liked your profile. Open the app to check out their profile!`
+          });
+        }
+      }
+    }
+
     return res.status(200).json({
       message: isMatch ? 'Mutual match registered!' : 'Like registered successfully.',
       isMatch
@@ -80,13 +142,68 @@ exports.likeUser = async (req, res) => {
   }
 };
 
+function getUserCoordinates(user) {
+  if (!user) return null;
+  const sources = [
+    user.currentLocation?.location?.coordinates,
+    user.location?.coordinates,
+    user.permanentAddress?.location?.coordinates,
+  ];
+
+  for (const coords of sources) {
+    if (Array.isArray(coords) && coords.length === 2) {
+      const lng = parseFloat(coords[0]);
+      const lat = parseFloat(coords[1]);
+      if (!isNaN(lng) && !isNaN(lat) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+        return { lat, lng };
+      }
+    }
+  }
+  return null;
+}
+
+function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Radius of Earth in km
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) *
+      Math.cos(lat2 * (Math.PI / 180)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function formatDistanceText(currentUserCoords, targetUserCoords, fallbackDistanceRange) {
+  if (currentUserCoords && targetUserCoords) {
+    const kmVal = calculateHaversineDistance(
+      currentUserCoords.lat,
+      currentUserCoords.lng,
+      targetUserCoords.lat,
+      targetUserCoords.lng
+    );
+    const formatted = (Math.round(kmVal * 10) / 10).toString();
+    return `${formatted} km away`;
+  }
+  if (fallbackDistanceRange) {
+    return `${fallbackDistanceRange} km away`;
+  }
+  return 'Location unavailable';
+}
+
 /**
  * Get all users who liked the current user but have not been liked back yet
  */
 exports.getLikes = async (req, res) => {
   try {
     const currentUserId = req.user._id;
+
+
     const blockedIds = await getBlockedUserIds(currentUserId);
+    const currentUser = await User.findById(currentUserId);
+    const currentUserCoords = getUserCoordinates(currentUser);
 
     const peopleWhoLikedMe = await Match.find({
       likedId: currentUserId,
@@ -104,29 +221,32 @@ exports.getLikes = async (req, res) => {
     });
 
     return res.status(200).json({
-      users: users.map(u => ({
-        id: u._id.toString(),
-        name: u.firstName || u.name,
-        email: u.email,
-        age: u.age || 22,
-        distance: u.distanceRange ? `${u.distanceRange} miles away` : '3 miles away',
-        bio: u.bio || '',
-        interests: u.interests && u.interests.length > 0 ? u.interests : ['☕ Coffee lover'],
-        image: u.profileImage || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=600',
-        gender: u.gender,
-        orientation: u.orientation || 'Straight',
-        lookingFor: u.lookingFor || 'Long-term partner',
-        drinkHabit: u.drinkHabit || 'Social drinker',
-        smokeHabit: u.smokeHabit || 'Never',
-        exercise: u.exercise || 'Occasionally',
-        pets: u.pets || 'Dog',
-        educationLevel: u.educationLevel || 'Undergraduate Degree',
-        zodiac: u.zodiac || 'Gemini',
-        height: u.height,
-        weight: u.weight,
-        job: u.job,
-        college: u.college,
-      }))
+      users: users.map(u => {
+        const targetUserCoords = getUserCoordinates(u);
+        return {
+          id: u._id.toString(),
+          name: u.firstName || u.name,
+          email: u.email,
+          age: u.age || null,
+          distance: formatDistanceText(currentUserCoords, targetUserCoords, u.distanceRange),
+          bio: u.bio || '',
+          interests: u.interests || [],
+          image: u.profileImage || '',
+          gender: u.gender,
+          orientation: u.orientation || '',
+          lookingFor: u.lookingFor || '',
+          drinkHabit: u.drinkHabit || '',
+          smokeHabit: u.smokeHabit || '',
+          exercise: u.exercise || '',
+          pets: u.pets || '',
+          educationLevel: u.educationLevel || '',
+          zodiac: u.zodiac || '',
+          height: u.height || '',
+          weight: u.weight || '',
+          job: u.job || '',
+          college: u.college || '',
+        };
+      })
     });
   } catch (error) {
     console.error('Fetch likes error:', error);
@@ -140,7 +260,11 @@ exports.getLikes = async (req, res) => {
 exports.getMatches = async (req, res) => {
   try {
     const currentUserId = req.user._id;
+
+
     const blockedIds = await getBlockedUserIds(currentUserId);
+    const currentUser = await User.findById(currentUserId);
+    const currentUserCoords = getUserCoordinates(currentUser);
 
     const peopleILiked = await Match.find({ likerId: currentUserId });
     const likedIds = peopleILiked.map(l => l.likedId.toString());
@@ -155,31 +279,34 @@ exports.getMatches = async (req, res) => {
     });
 
     return res.status(200).json({
-      matches: users.map(u => ({
-        id: u._id.toString(),
-        name: u.firstName || u.name,
-        email: u.email,
-        age: u.age || 22,
-        distance: u.distanceRange ? `${u.distanceRange} miles away` : '3 miles away',
-        bio: u.bio || '',
-        interests: u.interests && u.interests.length > 0 ? u.interests : ['☕ Coffee lover'],
-        image: u.profileImage || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=600',
-        gender: u.gender,
-        orientation: u.orientation || 'Straight',
-        lookingFor: u.lookingFor || 'Long-term partner',
-        drinkHabit: u.drinkHabit || 'Social drinker',
-        smokeHabit: u.smokeHabit || 'Never',
-        exercise: u.exercise || 'Occasionally',
-        pets: u.pets || 'Dog',
-        educationLevel: u.educationLevel || 'Undergraduate Degree',
-        zodiac: u.zodiac || 'Gemini',
-        height: u.height,
-        weight: u.weight,
-        job: u.job,
-        college: u.college,
-        isOnline: (u.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false),
-        lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
-      }))
+      matches: users.map(u => {
+        const targetUserCoords = getUserCoordinates(u);
+        return {
+          id: u._id.toString(),
+          name: u.firstName || u.name,
+          email: u.email,
+          age: u.age || null,
+          distance: formatDistanceText(currentUserCoords, targetUserCoords, u.distanceRange),
+          bio: u.bio || '',
+          interests: u.interests || [],
+          image: u.profileImage || '',
+          gender: u.gender,
+          orientation: u.orientation || '',
+          lookingFor: u.lookingFor || '',
+          drinkHabit: u.drinkHabit || '',
+          smokeHabit: u.smokeHabit || '',
+          exercise: u.exercise || '',
+          pets: u.pets || '',
+          educationLevel: u.educationLevel || '',
+          zodiac: u.zodiac || '',
+          height: u.height || '',
+          weight: u.weight || '',
+          job: u.job || '',
+          college: u.college || '',
+          isOnline: (u.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false),
+          lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
+        };
+      })
     });
   } catch (error) {
     console.error('Fetch matches error:', error);

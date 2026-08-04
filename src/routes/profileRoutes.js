@@ -7,12 +7,14 @@ const upload = require('../middleware/upload');
 
 router.put('/questionnaire', auth, profileController.saveQuestionnaire);
 router.put('/location', auth, profileController.updateLocation);
+router.delete('/location', auth, profileController.clearCurrentLocation);
 router.get('/questionnaire', auth, profileController.getQuestionnaires);
 router.get('/profile', auth, profileController.getProfile);
 router.get('/online-users', auth, profileController.getOnlineUsers);
 router.post('/upload', auth, upload.single('photo'), profileController.uploadImage);
 router.post('/remove-photo', auth, profileController.removeProfilePhoto);
 router.post('/remove-profile', auth, profileController.removeProfile);
+router.put('/fcm-token', auth, profileController.updateFcmToken);
 
 // Map DELETE /profile to deleteAccount for backward compatibility with the frontend
 router.delete('/profile', auth, authController.deleteAccount);

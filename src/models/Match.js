@@ -12,6 +12,10 @@ const MatchSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
+    isSuperLike: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     collection: 'Matches', // Targets the "Matches" collection created by the user

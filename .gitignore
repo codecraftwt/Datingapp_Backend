@@ -4,8 +4,15 @@
 .env
 .env.*
 !.env.example
+firebase-service-account.json
+*firebase-adminsdk*.json
+google-services.json
+GoogleService-Info.plist
 *.pem
 *.key
+*.p12
+*.crt
+*.pfx
 
 # ==========================================
 # Node.js Dependencies & Logs
@@ -14,22 +21,33 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 logs/
 *.log
 
 # ==========================================
-# User Uploads
+# User Uploads & Temp Files
 # ==========================================
 uploads/*
 !uploads/.gitkeep
+temp/
+tmp/
 
 # ==========================================
 # Operating System & IDE Files
 # ==========================================
 .DS_Store
 Thumbs.db
+Desktop.ini
 .vscode/
 .idea/
 
-# Postman collection
+# Postman collection & Environment
 Dating_App_Postman_Collection.json
+*.postman_environment.json
+
+# Coverage & Build Output
+coverage/
+.nyc_output/
+dist/
+build/

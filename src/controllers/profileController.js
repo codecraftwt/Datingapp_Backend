@@ -45,6 +45,7 @@ exports.saveQuestionnaire = async (req, res) => {
       profileImages,
       bio,
       gender,
+      languages,
       completionPercentage
     } = req.body;
 
@@ -93,6 +94,7 @@ exports.saveQuestionnaire = async (req, res) => {
       profileImages,
       bio,
       gender,
+      languages,
       completionPercentage
     };
 
@@ -164,6 +166,26 @@ exports.saveQuestionnaire = async (req, res) => {
   }
 };
 
+function getUserCoordinates(user) {
+  if (!user) return null;
+  const sources = [
+    user.currentLocation?.location?.coordinates,
+    user.location?.coordinates,
+    user.permanentAddress?.location?.coordinates,
+  ];
+
+  for (const coords of sources) {
+    if (Array.isArray(coords) && coords.length === 2) {
+      const lng = parseFloat(coords[0]);
+      const lat = parseFloat(coords[1]);
+      if (!isNaN(lng) && !isNaN(lat) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+        return { lat, lng };
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Helper function to calculate Haversine distance in km
  */
@@ -182,7 +204,7 @@ function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Save / Update User GPS Location
+ * Save / Update User GPS Location (Temporary Address / Current Location)
  */
 exports.updateLocation = async (req, res) => {
   try {
@@ -204,6 +226,13 @@ exports.updateLocation = async (req, res) => {
       req.user._id,
       {
         $set: {
+          currentLocation: {
+            location: {
+              type: 'Point',
+              coordinates: [lng, lat],
+            },
+            updatedAt: new Date(),
+          },
           location: {
             type: 'Point',
             coordinates: [lng, lat],
@@ -213,11 +242,11 @@ exports.updateLocation = async (req, res) => {
       { new: true }
     );
 
-    console.log(`[DATABASE UPDATE] Location saved for user ${req.user._id} (${updatedUser?.name || 'User'}): [lng: ${lng}, lat: ${lat}]`);
+    console.log(`[DATABASE UPDATE] Temporary Current Location saved for user ${req.user._id} (${updatedUser?.name || 'User'}): [lng: ${lng}, lat: ${lat}]`);
 
     return res.status(200).json({
-      message: 'Location updated successfully',
-      location: updatedUser?.location,
+      message: 'Temporary current location updated successfully',
+      currentLocation: updatedUser?.currentLocation,
     });
   } catch (error) {
     console.error('Update location error:', error);
@@ -226,7 +255,33 @@ exports.updateLocation = async (req, res) => {
 };
 
 /**
+ * Clear User Current GPS Location (Reverts filtering back to permanent address)
+ */
+exports.clearCurrentLocation = async (req, res) => {
+  try {
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $unset: { currentLocation: 1 },
+      },
+      { new: true }
+    );
+
+    console.log(`[DATABASE UPDATE] Cleared current location for user ${req.user._id}. Reverted to permanent address.`);
+
+    return res.status(200).json({
+      message: 'Current location cleared successfully. Filtering will now use Permanent Address.',
+      permanentAddress: updatedUser?.permanentAddress,
+    });
+  } catch (error) {
+    console.error('Clear location error:', error);
+    return res.status(500).json({ message: 'Server error while clearing current location.' });
+  }
+};
+
+/**
  * Get questionnaire details of all other users filtered by distance range using MongoDB $geoNear
+ * Prioritizes: 1. Current Location (if present) -> 2. Permanent Address
  */
 exports.getQuestionnaires = async (req, res) => {
   try {
@@ -245,13 +300,39 @@ exports.getQuestionnaires = async (req, res) => {
     const maxAge = parseInt(currentUser?.ageRangeMax, 10) || 100;
     const userInterests = currentUser?.interests || [];
 
-    const hasUserLocation =
-      currentUser &&
-      currentUser.location &&
-      Array.isArray(currentUser.location.coordinates) &&
-      currentUser.location.coordinates.length === 2 &&
+    // Prioritize Current Location over Permanent Address for filtering
+    const hasCurrentLocation =
+      currentUser?.currentLocation?.location?.coordinates?.length === 2 &&
+      typeof currentUser.currentLocation.location.coordinates[0] === 'number' &&
+      typeof currentUser.currentLocation.location.coordinates[1] === 'number';
+
+    const hasPermanentLocation =
+      currentUser?.permanentAddress?.location?.coordinates?.length === 2 &&
+      typeof currentUser.permanentAddress.location.coordinates[0] === 'number' &&
+      typeof currentUser.permanentAddress.location.coordinates[1] === 'number';
+
+    const hasLegacyLocation =
+      currentUser?.location?.coordinates?.length === 2 &&
       typeof currentUser.location.coordinates[0] === 'number' &&
       typeof currentUser.location.coordinates[1] === 'number';
+
+    let activeUserCoordinates = null;
+    let locationSource = 'None';
+
+    if (hasCurrentLocation) {
+      activeUserCoordinates = currentUser.currentLocation.location.coordinates;
+      locationSource = 'Current Location (Temporary)';
+    } else if (hasPermanentLocation) {
+      activeUserCoordinates = currentUser.permanentAddress.location.coordinates;
+      locationSource = 'Permanent Address';
+    } else if (hasLegacyLocation) {
+      activeUserCoordinates = currentUser.location.coordinates;
+      locationSource = 'Legacy Location';
+    }
+
+    console.log(`📍 [SUGGESTION FEED FILTER] User ${currentUser?._id} filtering profiles using: ${locationSource} ->`, activeUserCoordinates);
+
+    const hasUserLocation = activeUserCoordinates !== null;
 
     // Build Mongo Query Object based on Gender Preference
     const mongoQuery = {
@@ -268,8 +349,8 @@ exports.getQuestionnaires = async (req, res) => {
     let users = [];
 
     if (hasUserLocation) {
-      const userLng = currentUser.location.coordinates[0];
-      const userLat = currentUser.location.coordinates[1];
+      const userLng = activeUserCoordinates[0];
+      const userLat = activeUserCoordinates[1];
 
       try {
         users = await User.aggregate([
@@ -295,20 +376,22 @@ exports.getQuestionnaires = async (req, res) => {
 
       // Filter by Haversine distance if user has location
       if (hasUserLocation) {
-        const userLng = currentUser.location.coordinates[0];
-        const userLat = currentUser.location.coordinates[1];
+        const userLng = activeUserCoordinates[0];
+        const userLat = activeUserCoordinates[1];
 
         users = users.filter((u) => {
-          if (
-            u.location &&
-            Array.isArray(u.location.coordinates) &&
-            u.location.coordinates.length === 2
-          ) {
+          // Candidate active coordinates: Current Location -> Permanent Address -> Legacy Location
+          const candidateCoords =
+            u.currentLocation?.location?.coordinates ||
+            u.permanentAddress?.location?.coordinates ||
+            u.location?.coordinates;
+
+          if (Array.isArray(candidateCoords) && candidateCoords.length === 2) {
             const distKm = calculateHaversineDistance(
               userLat,
               userLng,
-              u.location.coordinates[1],
-              u.location.coordinates[0]
+              candidateCoords[1],
+              candidateCoords[0]
             );
             u.calculatedDistanceMeters = distKm * 1000;
             return distKm <= userDistanceRangeKm;
@@ -377,12 +460,8 @@ exports.getQuestionnaires = async (req, res) => {
 
         if (typeof u.calculatedDistanceMeters === 'number') {
           const kmVal = u.calculatedDistanceMeters / 1000;
-          if (kmVal < 0.5) {
-            distanceText = 'Less than 1 km away';
-          } else {
-            const formatted = (Math.round(kmVal * 10) / 10).toString();
-            distanceText = `${formatted} km away`;
-          }
+          const formatted = (Math.round(kmVal * 10) / 10).toString();
+          distanceText = `${formatted} km away`;
         } else if (
           userLat !== null &&
           userLng !== null &&
@@ -396,14 +475,8 @@ exports.getQuestionnaires = async (req, res) => {
             u.location.coordinates[1],
             u.location.coordinates[0]
           );
-          if (kmVal < 0.5) {
-            distanceText = 'Less than 1 km away';
-          } else {
-            const formatted = (Math.round(kmVal * 10) / 10).toString();
-            distanceText = `${formatted} km away`;
-          }
-        } else if (u.distanceRange) {
-          distanceText = `${u.distanceRange} km away`;
+          const formatted = (Math.round(kmVal * 10) / 10).toString();
+          distanceText = `${formatted} km away`;
         }
 
         return {
@@ -413,27 +486,27 @@ exports.getQuestionnaires = async (req, res) => {
           bdayDay: u.bdayDay,
           bdayMonth: u.bdayMonth,
           bdayYear: u.bdayYear,
-          age: u.computedCandidateAge || u.age || 22,
+          age: u.computedCandidateAge || u.age || null,
           distance: distanceText,
           bio: u.bio || '',
-          interests: u.interests && u.interests.length > 0 ? u.interests : ['☕ Coffee lover'],
+          interests: u.interests || [],
           commonInterests: u.commonInterests || [],
           commonInterestsCount: u.commonInterestsCount || 0,
           matchPercentage: u.matchPercentage || 0,
-          image: u.profileImage || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=600',
+          image: u.profileImage || '',
           gender: u.gender,
-          orientation: u.orientation || 'Straight',
-          lookingFor: u.lookingFor || 'Long-term partner',
-          drinkHabit: u.drinkHabit || 'Social drinker',
-          smokeHabit: u.smokeHabit || 'Never',
-          exercise: u.exercise || 'Occasionally',
-          pets: u.pets || 'Dog',
-          educationLevel: u.educationLevel || 'Undergraduate Degree',
-          zodiac: u.zodiac || 'Gemini',
-          height: u.height,
-          weight: u.weight,
-          job: u.job,
-          college: u.college,
+          orientation: u.orientation || '',
+          lookingFor: u.lookingFor || '',
+          drinkHabit: u.drinkHabit || '',
+          smokeHabit: u.smokeHabit || '',
+          exercise: u.exercise || '',
+          pets: u.pets || '',
+          educationLevel: u.educationLevel || '',
+          zodiac: u.zodiac || '',
+          height: u.height || '',
+          weight: u.weight || '',
+          job: u.job || '',
+          college: u.college || '',
           isOnline: (u.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has((u._id || u.id).toString()) : false),
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
@@ -446,7 +519,7 @@ exports.getQuestionnaires = async (req, res) => {
 };
 
 /**
- * Get current user profile questionnaire details
+ * Get user profile by ID
  */
 exports.getProfile = async (req, res) => {
   try {
@@ -497,6 +570,9 @@ exports.getProfile = async (req, res) => {
  */
 exports.getOnlineUsers = async (req, res) => {
   try {
+    const currentUser = await User.findById(req.user._id);
+    const currentUserCoords = getUserCoordinates(currentUser);
+
     const users = await User.find({
       _id: { $ne: req.user._id },
       isLoggedIn: true
@@ -504,28 +580,45 @@ exports.getOnlineUsers = async (req, res) => {
     
     return res.status(200).json({
       message: 'Online users fetched successfully',
-      users: users.map(u => ({
-        id: u._id.toString(),
-        name: u.firstName || u.name,
-        age: u.age || 22,
-        distance: u.distanceRange ? `${u.distanceRange} miles away` : '3 miles away',
-        bio: u.bio || '',
-        interests: u.interests && u.interests.length > 0 ? u.interests : ['☕ Coffee lover'],
-        image: u.profileImage || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=600',
-        gender: u.gender,
-        orientation: u.orientation || 'Straight',
-        lookingFor: u.lookingFor || 'Long-term partner',
-        drinkHabit: u.drinkHabit || 'Social drinker',
-        smokeHabit: u.smokeHabit || 'Never',
-        exercise: u.exercise || 'Occasionally',
-        pets: u.pets || 'Dog',
-        educationLevel: u.educationLevel || 'Undergraduate Degree',
-        zodiac: u.zodiac || 'Gemini',
-        height: u.height,
-        weight: u.weight,
-        job: u.job,
-        college: u.college,
-      }))
+      users: users.map(u => {
+        const targetUserCoords = getUserCoordinates(u);
+        let distanceText = '1 km away';
+        if (currentUserCoords && targetUserCoords) {
+          const kmVal = calculateHaversineDistance(
+            currentUserCoords.lat,
+            currentUserCoords.lng,
+            targetUserCoords.lat,
+            targetUserCoords.lng
+          );
+          const formatted = (Math.round(kmVal * 10) / 10).toString();
+          distanceText = `${formatted} km away`;
+        } else if (u.distanceRange) {
+          distanceText = `${u.distanceRange} km away`;
+        }
+
+        return {
+          id: u._id.toString(),
+          name: u.firstName || u.name,
+          age: u.age || 22,
+          distance: distanceText,
+          bio: u.bio || '',
+          interests: u.interests && u.interests.length > 0 ? u.interests : ['☕ Coffee lover'],
+          image: u.profileImage || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=600',
+          gender: u.gender,
+          orientation: u.orientation || 'Straight',
+          lookingFor: u.lookingFor || 'Long-term partner',
+          drinkHabit: u.drinkHabit || 'Social drinker',
+          smokeHabit: u.smokeHabit || 'Never',
+          exercise: u.exercise || 'Occasionally',
+          pets: u.pets || 'Dog',
+          educationLevel: u.educationLevel || 'Undergraduate Degree',
+          zodiac: u.zodiac || 'Gemini',
+          height: u.height,
+          weight: u.weight,
+          job: u.job,
+          college: u.college,
+        };
+      })
     });
   } catch (error) {
     console.error('Fetch online users error:', error);
@@ -688,5 +781,24 @@ exports.removeProfile = async (req, res) => {
   } catch (error) {
     console.error('Remove profile error:', error);
     return res.status(500).json({ message: 'Server error while removing profile.' });
+  }
+};
+
+/**
+ * Update FCM Token for Push Notifications
+ */
+exports.updateFcmToken = async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken) {
+      return res.status(400).json({ message: 'FCM Token is required.' });
+    }
+
+    await User.findByIdAndUpdate(req.user._id, { fcmToken });
+    console.log(`[FCM Token] Updated FCM token for user ${req.user._id}`);
+    return res.status(200).json({ message: 'FCM Token updated successfully.' });
+  } catch (error) {
+    console.error('Update FCM Token error:', error);
+    return res.status(500).json({ message: 'Server error while updating FCM Token.' });
   }
 };

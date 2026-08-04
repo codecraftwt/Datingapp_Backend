@@ -9,14 +9,39 @@ const Match = require('../models/Match');
  */
 exports.register = async (req, res) => {
   try {
-    const { name, email, mobile, password, confirmPassword, gender } = req.body;
+    const {
+      name,
+      email,
+      mobile,
+      password,
+      confirmPassword,
+      gender,
+      country,
+      state,
+      district,
+      city,
+      latitude,
+      longitude,
+      tempLatitude,
+      tempLongitude,
+    } = req.body;
 
     if (!name || !email || !mobile || !password || !confirmPassword || !gender) {
-      return res.status(400).json({ message: 'All fields are required.' });
+      return res.status(400).json({ message: 'All basic fields are required.' });
+    }
+
+    if (!country || !state || !district || !city) {
+      return res.status(400).json({ message: 'Permanent address (Country, State, District, City) is mandatory.' });
+    }
+
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({ message: 'Valid latitude and longitude coordinates are required for permanent address.' });
     }
 
     if (password !== confirmPassword) {
-      return res.status(400).json({ message: 'Passwords do not match.' });
+      return res.status(400).json({ message: 'Password and Confirm Password do not match.' });
     }
 
     if (password.length < 8) {
@@ -40,12 +65,47 @@ exports.register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    const permanentAddressObj = {
+      country: country.trim(),
+      state: state.trim(),
+      district: district.trim(),
+      city: city.trim(),
+      location: {
+        type: 'Point',
+        coordinates: [lng, lat],
+      },
+    };
+
+    // Optional Temporary Address / Current Location
+    let currentLocationObj = undefined;
+    if (
+      tempLatitude !== null &&
+      tempLatitude !== undefined &&
+      tempLongitude !== null &&
+      tempLongitude !== undefined
+    ) {
+      const tempLat = parseFloat(tempLatitude);
+      const tempLng = parseFloat(tempLongitude);
+      if (!isNaN(tempLat) && !isNaN(tempLng)) {
+        currentLocationObj = {
+          location: {
+            type: 'Point',
+            coordinates: [tempLng, tempLat],
+          },
+          updatedAt: new Date(),
+        };
+      }
+    }
+
     const newUser = new User({
       name,
       email,
       mobile,
       password: hashedPassword,
       gender,
+      permanentAddress: permanentAddressObj,
+      currentLocation: currentLocationObj, // Optional (null/undefined if not fetched)
+      location: currentLocationObj?.location || permanentAddressObj.location,
       isLoggedIn: true,
     });
 
@@ -66,6 +126,7 @@ exports.register = async (req, res) => {
         email: newUser.email,
         mobile: newUser.mobile,
         gender: newUser.gender,
+        permanentAddress: newUser.permanentAddress,
         bio: newUser.bio || '',
       },
     });
@@ -154,6 +215,7 @@ exports.logout = async (req, res) => {
     if (user) {
       user.isLoggedIn = false;
       user.lastSeen = lastSeenDate;
+      user.fcmToken = null;
       await user.save();
     }
 
