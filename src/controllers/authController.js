@@ -114,7 +114,7 @@ exports.register = async (req, res) => {
 
     const token = jwt.sign(
       { userId: newUser._id },
-      process.env.JWT_SECRET || 'fallback_secret',
+      process.env.JWT_SECRET || 'super_secret_dating_app_token_key_123!',
       { expiresIn: '7d' }
     );
 
@@ -161,7 +161,7 @@ exports.login = async (req, res) => {
 
     const token = jwt.sign(
       { userId: user._id },
-      process.env.JWT_SECRET || 'fallback_secret',
+      process.env.JWT_SECRET || 'super_secret_dating_app_token_key_123!',
       { expiresIn: '7d' }
     );
 
