@@ -5,6 +5,7 @@ const auth = require('../middleware/auth');
 const upload = require('../middleware/upload');
 
 router.get('/messages', auth, chatController.getMessages);
+router.post('/messages', auth, chatController.sendMessage);
 router.get('/messages/:selectedUserId', auth, chatController.getChatMessages);
 router.put('/messages/:messageId', auth, chatController.editMessage);
 router.delete('/messages/:messageId', auth, chatController.deleteMessage);

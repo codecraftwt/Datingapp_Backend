@@ -1,5 +1,7 @@
 const Message = require('../models/Message');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
+const { sendPushNotification } = require('../services/pushNotificationService');
 
 /**
  * Get all chat messages involving the authenticated user
@@ -224,5 +226,100 @@ exports.uploadChatMedia = async (req, res) => {
   } catch (error) {
     console.error('Chat media upload error:', error);
     return res.status(500).json({ message: 'Server error during chat media upload.' });
+  }
+};
+
+/**
+ * Send a chat message (REST API Fallback for Vercel/Serverless environments)
+ */
+exports.sendMessage = async (req, res) => {
+  try {
+    const senderId = req.user._id;
+    const { receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId } = req.body;
+
+    if (!receiverId) {
+      return res.status(400).json({ message: 'Receiver ID is required.' });
+    }
+    if (!text && !mediaUrl && !stickerId) {
+      return res.status(400).json({ message: 'Message content is required.' });
+    }
+
+    const onlineUsers = global.onlineUsers || new Map();
+    const receiverSocketId = onlineUsers.get(receiverId.toString());
+    const initialStatus = receiverSocketId ? 'delivered' : 'sent';
+
+    const newMessage = new Message({
+      senderId,
+      receiverId,
+      text,
+      messageType: messageType || 'text',
+      mediaUrl,
+      fileName,
+      fileSize,
+      stickerId,
+      status: initialStatus,
+    });
+    await newMessage.save();
+
+    const msgData = {
+      _id: newMessage._id,
+      senderId: senderId.toString(),
+      receiverId: receiverId.toString(),
+      text: newMessage.text,
+      messageType: newMessage.messageType,
+      mediaUrl: newMessage.mediaUrl,
+      fileName: newMessage.fileName,
+      fileSize: newMessage.fileSize,
+      stickerId: newMessage.stickerId,
+      status: newMessage.status,
+      createdAt: newMessage.createdAt,
+      tempId: tempId || null,
+    };
+
+    const io = req.app.get('io');
+    if (io && receiverSocketId) {
+      io.to(receiverSocketId).emit('receive_message', msgData);
+    }
+
+    // Trigger FCM Push Notification
+    const senderUser = await User.findById(senderId).select('firstName name');
+    const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
+
+    let notificationText = '💬 Sent a message';
+    let notificationTitle = `💬 ${senderName}`;
+
+    if (messageType === 'voice') {
+      notificationTitle = `🎤 Voice Message from ${senderName}`;
+      notificationText = '🎤 Sent a voice note / audio message';
+    } else if (messageType === 'call') {
+      notificationTitle = `📞 Voice Call from ${senderName}`;
+      notificationText = text || '📞 Voice call';
+    } else if (messageType === 'image') {
+      notificationText = '📷 Sent a photo';
+    } else if (messageType === 'video') {
+      notificationText = '🎬 Sent a video';
+    } else if (messageType === 'document') {
+      notificationText = '📄 Sent a document';
+    } else if (messageType === 'sticker') {
+      notificationText = '😊 Sent a sticker';
+    } else if (text) {
+      notificationText = text;
+    }
+
+    sendPushNotification(receiverId, {
+      title: notificationTitle,
+      body: notificationText,
+      data: {
+        type: messageType || 'chat',
+        senderId: senderId.toString(),
+        messageId: newMessage._id.toString(),
+        notificationId: newMessage._id.toString(),
+      },
+    }).catch((err) => console.error('REST Chat FCM push error:', err));
+
+    return res.status(201).json({ message: 'Message sent successfully.', data: msgData });
+  } catch (error) {
+    console.error('Send message REST API error:', error);
+    return res.status(500).json({ message: 'Server error while sending message.' });
   }
 };
