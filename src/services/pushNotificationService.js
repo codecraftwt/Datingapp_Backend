@@ -6,24 +6,46 @@ const User = require('../models/User');
 let isFirebaseInitialized = false;
 
 try {
-  // Check candidate service account key locations
-  const candidatePaths = [
-    path.join(__dirname, '../../dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json'),
-    path.join(__dirname, '../../firebase-service-account.json'),
-  ];
+  let serviceAccount = null;
 
-  let serviceAccountPath = candidatePaths.find((p) => fs.existsSync(p));
+  // 1. Check if provided via environment variable
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    } catch (e) {
+      console.error('[FCM Push] Error parsing FIREBASE_SERVICE_ACCOUNT env var:', e.message);
+    }
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    try {
+      const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+      serviceAccount = JSON.parse(decoded);
+    } catch (e) {
+      console.error('[FCM Push] Error parsing FIREBASE_SERVICE_ACCOUNT_BASE64 env var:', e.message);
+    }
+  }
 
-  if (serviceAccountPath) {
-    const serviceAccount = require(serviceAccountPath);
+  // 2. Check candidate service account key files on disk
+  if (!serviceAccount) {
+    const candidatePaths = [
+      path.join(__dirname, '../../dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json'),
+      path.join(__dirname, '../../firebase-service-account.json'),
+    ];
+    const serviceAccountPath = candidatePaths.find((p) => fs.existsSync(p));
+    if (serviceAccountPath) {
+      serviceAccount = require(serviceAccountPath);
+      console.log(`[FCM Push] Found Firebase JSON file: ${path.basename(serviceAccountPath)}`);
+    }
+  }
+
+  if (serviceAccount) {
     const credential = (admin.credential && admin.credential.cert) ? admin.credential.cert(serviceAccount) : admin.cert(serviceAccount);
     if (!admin.apps || admin.apps.length === 0) {
       admin.initializeApp({ credential });
     }
     isFirebaseInitialized = true;
-    console.log(`[FCM Push] Firebase Admin SDK successfully initialized using: ${path.basename(serviceAccountPath)}`);
+    console.log('[FCM Push] Firebase Admin SDK successfully initialized.');
   } else {
-    console.warn('[FCM Push] Warning: Firebase service account JSON key not found in Backend root directory.');
+    console.warn('[FCM Push] Warning: Firebase service account not found (check JSON file or FIREBASE_SERVICE_ACCOUNT env var).');
   }
 } catch (err) {
   console.error('[FCM Push] Failed to initialize Firebase Admin SDK:', err.message);
