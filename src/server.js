@@ -116,12 +116,32 @@ io.on('connection', (socket) => {
   console.log('Socket client connected:', socket.id);
 
   // User joins and registers their userId
-  socket.on('join', (userId) => {
+  socket.on('join', async (userId) => {
     if (userId) {
       onlineUsers.set(userId.toString(), socket.id);
       console.log(`User ${userId} associated with socket ${socket.id}`);
       // Broadcast online status to all clients
       io.emit('user_status', { userId: userId.toString(), status: 'online' });
+
+      // Mark pending 'sent' messages as 'delivered' for this user upon connecting
+      try {
+        const undeliveredMsgs = await Message.find({ receiverId: userId, status: 'sent' });
+        if (undeliveredMsgs.length > 0) {
+          await Message.updateMany({ receiverId: userId, status: 'sent' }, { status: 'delivered' });
+          undeliveredMsgs.forEach((msg) => {
+            const senderSocketId = onlineUsers.get(msg.senderId.toString());
+            if (senderSocketId) {
+              io.to(senderSocketId).emit('message_delivered', {
+                messageId: msg._id.toString(),
+                receiverId: userId.toString(),
+                status: 'delivered',
+              });
+            }
+          });
+        }
+      } catch (err) {
+        console.error('Error updating undelivered messages on socket join:', err);
+      }
     }
   });
 
@@ -167,7 +187,7 @@ io.on('connection', (socket) => {
         io.to(receiverSocketId).emit('receive_message', msgData);
         console.log(`Socket: Message sent and delivered from ${senderId} to online receiver ${receiverId}`);
         // Notify sender that it has been delivered
-        socket.emit('message_delivered', { messageId: newMessage._id.toString(), receiverId: receiverId.toString() });
+        socket.emit('message_delivered', { messageId: newMessage._id.toString(), tempId: tempId || null, receiverId: receiverId.toString(), status: 'delivered' });
       } else {
         console.log(`Socket: Message sent as pending from ${senderId} to offline receiver ${receiverId}`);
       }
@@ -243,7 +263,9 @@ io.on('connection', (socket) => {
       const senderSocketId = onlineUsers.get(senderId.toString());
       if (senderSocketId) {
         io.to(senderSocketId).emit('messages_seen', {
-          receiverId: receiverId.toString(), // the user who saw the messages (the reader)
+          senderId: senderId.toString(),
+          receiverId: receiverId.toString(),
+          status: 'seen',
         });
       }
     } catch (err) {
