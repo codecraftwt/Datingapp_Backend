@@ -642,9 +642,9 @@ exports.blockUser = async (req, res) => {
  */
 exports.reportUser = async (req, res) => {
   try {
-    const { reportedId, targetUserId, reason, details } = req.body;
+    const { reportedId, targetUserId, reportedUserId, reason, details } = req.body;
     const currentUserId = req.user._id;
-    const targetId = reportedId || targetUserId;
+    const targetId = reportedId || targetUserId || reportedUserId;
 
     if (!targetId) {
       return res.status(400).json({ message: 'Reported user ID is required.' });
