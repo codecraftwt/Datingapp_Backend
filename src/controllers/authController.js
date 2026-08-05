@@ -148,7 +148,8 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
 
-    const user = await User.findOne({ email });
+    const cleanEmail = email.trim().toLowerCase();
+    const user = await User.findOne({ email: { $regex: new RegExp(`^${cleanEmail}$`, 'i') } });
     if (!user) {
       return res.status(400).json({ message: 'Invalid email or password.' });
     }
@@ -164,17 +165,19 @@ exports.login = async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    user.isLoggedIn = true;
+    const updateFields = { isLoggedIn: true };
     if (fcmToken) {
-      user.fcmToken = fcmToken;
+      updateFields.fcmToken = fcmToken;
     }
-    await user.save();
+
+    await User.findByIdAndUpdate(user._id, { $set: updateFields });
 
     return res.status(200).json({
       message: 'Login successful',
       token,
       user: {
         id: user._id,
+        _id: user._id,
         name: user.name,
         email: user.email,
         mobile: user.mobile,
@@ -191,19 +194,21 @@ exports.login = async (req, res) => {
         pets: user.pets,
         educationLevel: user.educationLevel,
         zodiac: user.zodiac,
-        interests: user.interests,
+        interests: user.interests || [],
+        languages: user.languages || [],
         interestedIn: user.interestedIn,
         lookingFor: user.lookingFor,
         ageRangeMin: user.ageRangeMin,
         ageRangeMax: user.ageRangeMax,
         distanceRange: user.distanceRange,
         profileImage: user.profileImage,
+        profileImages: user.profileImages || [],
         bio: user.bio || '',
       },
     });
   } catch (error) {
     console.error('Login error:', error);
-    return res.status(500).json({ message: 'Server error during login.' });
+    return res.status(500).json({ message: 'Server error during login.', error: error.message });
   }
 };
 
