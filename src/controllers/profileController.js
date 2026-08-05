@@ -665,30 +665,45 @@ exports.getOnlineUsers = async (req, res) => {
  */
 exports.uploadImage = async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No file uploaded.' });
+    const file = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
+    const bodyImage = req.body?.photo || req.body?.image || req.body?.file || req.body?.base64;
+
+    let result = null;
+
+    if (file && file.path) {
+      console.log('Uploading photo file to Cloudinary:', file.path);
+      result = await cloudinary.uploader.upload(file.path, {
+        folder: 'dating_app_profiles',
+      });
+      if (fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (e) {}
+      }
+    } else if (file && file.buffer) {
+      console.log('Uploading photo buffer to Cloudinary...');
+      result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'dating_app_profiles' },
+          (err, res) => (err ? reject(err) : resolve(res))
+        );
+        stream.end(file.buffer);
+      });
+    } else if (bodyImage && typeof bodyImage === 'string' && bodyImage.length > 20) {
+      console.log('Uploading body image string to Cloudinary...');
+      result = await cloudinary.uploader.upload(bodyImage, {
+        folder: 'dating_app_profiles',
+      });
+    } else {
+      return res.status(400).json({ message: 'No file or image data received.' });
     }
 
-    console.log('Uploading photo to Cloudinary:', req.file.path);
-
-    // Upload to Cloudinary using configured API Key & Secret
-    const result = await cloudinary.uploader.upload(req.file.path, {
-      folder: 'dating_app_profiles',
-    });
-
-    console.log('Cloudinary upload success:', result.secure_url);
-
-    // Delete temporary local file
-    if (fs.existsSync(req.file.path)) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (e) {}
-    }
+    console.log('Cloudinary upload success:', result?.secure_url);
 
     return res.status(200).json({
       message: 'File uploaded successfully to Cloudinary',
-      url: result.secure_url,
-      secure_url: result.secure_url,
+      url: result?.secure_url,
+      secure_url: result?.secure_url,
     });
   } catch (error) {
     console.error('Cloudinary file upload error:', error);
@@ -699,7 +714,7 @@ exports.uploadImage = async (req, res) => {
         console.error('Failed to clean up temporary file after error:', err);
       }
     }
-    return res.status(500).json({ message: 'Server error during file upload.', error: error.message });
+    return res.status(500).json({ message: 'Server error during file upload.', error: error.message || String(error) });
   }
 };
 
