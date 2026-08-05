@@ -1,5 +1,13 @@
+const dns = require('dns');
+try {
+  dns.setServers(['8.8.8.8', '8.8.4.4']);
+} catch (e) {
+  // Ignore if custom DNS fails
+}
+
 const express = require('express');
 const cors = require('cors');
+
 const mongoose = require('mongoose');
 const path = require('path');
 const http = require('http');

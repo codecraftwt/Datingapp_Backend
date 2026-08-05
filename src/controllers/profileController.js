@@ -6,10 +6,11 @@ const fs = require('fs');
 const cloudinary = require('cloudinary').v2;
 
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dwwykeft2',
+  api_key: process.env.CLOUDINARY_API_KEY || '888317163598995',
+  api_secret: process.env.CLOUDINARY_API_SECRET || 'VYck0A_t17ivmkR6DQApA_FU_Nk',
 });
+
 
 /**
  * Save/Update user dating profile questionnaire
@@ -67,6 +68,39 @@ exports.saveQuestionnaire = async (req, res) => {
       }
     }
 
+    // Ensure profileImage and profileImages store valid Cloudinary CDN URLs only
+    let finalProfileImages = [];
+    if (Array.isArray(profileImages) && profileImages.length > 0) {
+      finalProfileImages = await Promise.all(
+        profileImages.map(async (img) => {
+          if (typeof img === 'string' && (img.startsWith('data:image/') || img.startsWith('file://'))) {
+            try {
+              const cloudRes = await cloudinary.uploader.upload(img, { folder: 'dating_app_profiles' });
+              return cloudRes.secure_url;
+            } catch (e) {
+              console.warn('Auto Cloudinary upload error for questionnaire photo:', e.message);
+              return null;
+            }
+          }
+          return (typeof img === 'string' && img.startsWith('http')) ? img : null;
+        })
+      );
+      finalProfileImages = finalProfileImages.filter(Boolean);
+    }
+
+    let finalProfileImage = typeof profileImage === 'string' && profileImage.startsWith('http') ? profileImage : '';
+    if (!finalProfileImage && (typeof profileImage === 'string') && (profileImage.startsWith('data:image/') || profileImage.startsWith('file://'))) {
+      try {
+        const cloudRes = await cloudinary.uploader.upload(profileImage, { folder: 'dating_app_profiles' });
+        finalProfileImage = cloudRes.secure_url;
+      } catch (e) {
+        console.warn('Auto Cloudinary upload error for profileImage:', e.message);
+      }
+    }
+    if (!finalProfileImage && finalProfileImages.length > 0) {
+      finalProfileImage = finalProfileImages[0];
+    }
+
     const setObj = {
       firstName,
       bdayDay,
@@ -90,8 +124,8 @@ exports.saveQuestionnaire = async (req, res) => {
       ageRangeMin,
       ageRangeMax,
       distanceRange,
-      profileImage,
-      profileImages,
+      profileImage: finalProfileImage,
+      profileImages: finalProfileImages,
       bio,
       gender,
       languages,
@@ -627,7 +661,7 @@ exports.getOnlineUsers = async (req, res) => {
 };
 
 /**
- * Upload profile photo
+ * Upload profile photo to Cloudinary
  */
 exports.uploadImage = async (req, res) => {
   try {
@@ -635,22 +669,29 @@ exports.uploadImage = async (req, res) => {
       return res.status(400).json({ message: 'No file uploaded.' });
     }
 
-    // Upload to Cloudinary using Unsigned Preset
-    const result = await cloudinary.uploader.unsigned_upload(req.file.path, 'Dating_Profiles', {
+    console.log('Uploading photo to Cloudinary:', req.file.path);
+
+    // Upload to Cloudinary using configured API Key & Secret
+    const result = await cloudinary.uploader.upload(req.file.path, {
       folder: 'dating_app_profiles',
     });
 
-    // Delete temporary file from backend server local storage
+    console.log('Cloudinary upload success:', result.secure_url);
+
+    // Delete temporary local file
     if (fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (e) {}
     }
 
     return res.status(200).json({
       message: 'File uploaded successfully to Cloudinary',
       url: result.secure_url,
+      secure_url: result.secure_url,
     });
   } catch (error) {
-    console.error('File upload error:', error);
+    console.error('Cloudinary file upload error:', error);
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
       try {
         fs.unlinkSync(req.file.path);
@@ -658,7 +699,7 @@ exports.uploadImage = async (req, res) => {
         console.error('Failed to clean up temporary file after error:', err);
       }
     }
-    return res.status(500).json({ message: 'Server error during file upload.' });
+    return res.status(500).json({ message: 'Server error during file upload.', error: error.message });
   }
 };
 

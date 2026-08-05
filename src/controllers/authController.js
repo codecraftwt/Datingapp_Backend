@@ -106,6 +106,7 @@ exports.register = async (req, res) => {
       permanentAddress: permanentAddressObj,
       currentLocation: currentLocationObj, // Optional (null/undefined if not fetched)
       location: currentLocationObj?.location || permanentAddressObj.location,
+      fcmToken: req.body.fcmToken || null,
       isLoggedIn: true,
     });
 
@@ -141,7 +142,7 @@ exports.register = async (req, res) => {
  */
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, fcmToken } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ message: 'Email and password are required.' });
@@ -164,6 +165,9 @@ exports.login = async (req, res) => {
     );
 
     user.isLoggedIn = true;
+    if (fcmToken) {
+      user.fcmToken = fcmToken;
+    }
     await user.save();
 
     return res.status(200).json({
