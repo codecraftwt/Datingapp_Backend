@@ -11,7 +11,12 @@ router.delete('/location', auth, profileController.clearCurrentLocation);
 router.get('/questionnaire', auth, profileController.getQuestionnaires);
 router.get('/profile', auth, profileController.getProfile);
 router.get('/online-users', auth, profileController.getOnlineUsers);
-router.post('/upload', auth, upload.single('photo'), profileController.uploadImage);
+router.post(['/upload', '/uploads'], auth, upload.any(), (req, res, next) => {
+  if (req.files && req.files.length > 0) {
+    req.file = req.files[0];
+  }
+  next();
+}, profileController.uploadImage);
 router.post('/remove-photo', auth, profileController.removeProfilePhoto);
 router.post('/remove-profile', auth, profileController.removeProfile);
 router.put('/fcm-token', auth, profileController.updateFcmToken);

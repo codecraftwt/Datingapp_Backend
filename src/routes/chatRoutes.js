@@ -12,7 +12,11 @@ router.delete('/messages/clear-all', auth, chatController.clearAllChats);
 router.delete('/messages/clear/:selectedUserId', auth, chatController.clearChat);
 
 // Support both /api/chat/upload and /api/chat/chat/upload
-router.post('/upload', auth, upload.single('file'), chatController.uploadChatMedia);
-router.post('/chat/upload', auth, upload.single('file'), chatController.uploadChatMedia);
+router.post(['/upload', '/chat/upload'], auth, upload.any(), (req, res, next) => {
+  if (req.files && req.files.length > 0) {
+    req.file = req.files[0];
+  }
+  next();
+}, chatController.uploadChatMedia);
 
 module.exports = router;
