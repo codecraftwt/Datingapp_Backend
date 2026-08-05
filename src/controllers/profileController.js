@@ -68,28 +68,36 @@ exports.saveQuestionnaire = async (req, res) => {
       }
     }
 
-    // Ensure profileImage and profileImages store valid Cloudinary CDN URLs only
+    // Ensure profileImage and profileImages store valid Cloudinary URLs or Data URIs
     let finalProfileImages = [];
     if (Array.isArray(profileImages) && profileImages.length > 0) {
       finalProfileImages = await Promise.all(
         profileImages.map(async (img) => {
-          if (typeof img === 'string' && (img.startsWith('data:image/') || img.startsWith('file://'))) {
+          if (typeof img === 'string' && (img.startsWith('http://') || img.startsWith('https://') || img.startsWith('data:image/'))) {
+            return img;
+          }
+          if (typeof img === 'string' && img.startsWith('file://')) {
             try {
-              const cloudRes = await cloudinary.uploader.upload(img, { folder: 'dating_app_profiles' });
+              const cloudRes = await cloudinary.uploader.unsigned_upload(img, 'Dating_Profiles');
               return cloudRes.secure_url;
             } catch (e) {
-              console.warn('Auto Cloudinary upload error for questionnaire photo:', e.message);
-              return null;
+              try {
+                const cloudRes = await cloudinary.uploader.upload(img, { folder: 'dating_app_profiles' });
+                return cloudRes.secure_url;
+              } catch (err2) {
+                console.warn('Auto Cloudinary upload error:', err2.message);
+                return null;
+              }
             }
           }
-          return (typeof img === 'string' && img.startsWith('http')) ? img : null;
+          return null;
         })
       );
       finalProfileImages = finalProfileImages.filter(Boolean);
     }
 
-    let finalProfileImage = typeof profileImage === 'string' && profileImage.startsWith('http') ? profileImage : '';
-    if (!finalProfileImage && (typeof profileImage === 'string') && (profileImage.startsWith('data:image/') || profileImage.startsWith('file://'))) {
+    let finalProfileImage = typeof profileImage === 'string' && (profileImage.startsWith('http') || profileImage.startsWith('data:image/')) ? profileImage : '';
+    if (!finalProfileImage && typeof profileImage === 'string' && profileImage.startsWith('file://')) {
       try {
         const cloudRes = await cloudinary.uploader.upload(profileImage, { folder: 'dating_app_profiles' });
         finalProfileImage = cloudRes.secure_url;
@@ -680,40 +688,64 @@ exports.uploadImage = async (req, res) => {
           fs.unlinkSync(file.path);
         } catch (e) {}
       }
-    } else if (file && file.buffer) {
-      console.log('Uploading photo buffer to Cloudinary...');
-      result = await new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          { folder: 'dating_app_profiles' },
-          (err, res) => (err ? reject(err) : resolve(res))
-        );
-        stream.end(file.buffer);
-      });
+    let imageUrl = null;
+
+    // Helper to upload to Cloudinary using Dating_Profiles preset
+    const doCloudinaryUpload = async (inputData) => {
+      try {
+        console.log('Attempting Cloudinary unsigned_upload with preset Dating_Profiles...');
+        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles');
+        if (cloudRes && cloudRes.secure_url) {
+          return cloudRes.secure_url;
+        }
+      } catch (err1) {
+        console.warn('Cloudinary unsigned_upload failed, trying signed upload:', err1.message || err1);
+        try {
+          const cloudRes = await cloudinary.uploader.upload(inputData, { folder: 'dating_app_profiles' });
+          if (cloudRes && cloudRes.secure_url) {
+            return cloudRes.secure_url;
+          }
+        } catch (err2) {
+          console.warn('Cloudinary signed upload failed:', err2.message || err2);
+        }
+      }
+      return null;
+    };
+
+    if (file && file.buffer) {
+      const base64Str = `data:${file.mimetype || 'image/jpeg'};base64,${file.buffer.toString('base64')}`;
+      imageUrl = await doCloudinaryUpload(base64Str);
+      if (!imageUrl) {
+        console.log('Using Base64 Data URI fallback for uploaded image');
+        imageUrl = base64Str;
+      }
+    } else if (file && file.path) {
+      imageUrl = await doCloudinaryUpload(file.path);
+      if (fs.existsSync(file.path)) {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (e) {}
+      }
     } else if (bodyImage && typeof bodyImage === 'string' && bodyImage.length > 20) {
-      console.log('Uploading body image string to Cloudinary...');
-      result = await cloudinary.uploader.upload(bodyImage, {
-        folder: 'dating_app_profiles',
-      });
-    } else {
+      imageUrl = await doCloudinaryUpload(bodyImage);
+      if (!imageUrl) {
+        imageUrl = bodyImage;
+      }
+    }
+
+    if (!imageUrl) {
       return res.status(400).json({ message: 'No file or image data received.' });
     }
 
-    console.log('Cloudinary upload success:', result?.secure_url);
+    console.log('Final Uploaded Image URL:', imageUrl.substring(0, 80));
 
     return res.status(200).json({
-      message: 'File uploaded successfully to Cloudinary',
-      url: result?.secure_url,
-      secure_url: result?.secure_url,
+      message: 'File uploaded successfully',
+      url: imageUrl,
+      secure_url: imageUrl,
     });
   } catch (error) {
-    console.error('Cloudinary file upload error:', error);
-    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (err) {
-        console.error('Failed to clean up temporary file after error:', err);
-      }
-    }
+    console.error('File upload handler error:', error);
     return res.status(500).json({ message: 'Server error during file upload.', error: error.message || String(error) });
   }
 };
