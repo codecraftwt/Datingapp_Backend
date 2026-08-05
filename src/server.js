@@ -393,6 +393,11 @@ io.on('connection', (socket) => {
 });
 
 // Start Server using http.Server
-server.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
+
