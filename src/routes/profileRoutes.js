@@ -9,7 +9,7 @@ router.put('/questionnaire', auth, profileController.saveQuestionnaire);
 router.put('/location', auth, profileController.updateLocation);
 router.delete('/location', auth, profileController.clearCurrentLocation);
 router.get('/questionnaire', auth, profileController.getQuestionnaires);
-router.get('/profile', auth, profileController.getProfile);
+router.get(['/profile', '/'], auth, profileController.getProfile);
 router.get('/online-users', auth, profileController.getOnlineUsers);
 router.post(['/upload', '/uploads'], auth, upload.any(), (req, res, next) => {
   if (req.files && req.files.length > 0) {

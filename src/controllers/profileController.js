@@ -565,45 +565,57 @@ exports.getQuestionnaires = async (req, res) => {
  */
 exports.getProfile = async (req, res) => {
   try {
+    const freshUser = await User.findById(req.user._id).select('-password');
+    if (!freshUser) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
     return res.status(200).json({
       message: 'Profile fetched successfully',
       user: {
-        id: req.user._id,
-        name: req.user.name,
-        email: req.user.email,
-        mobile: req.user.mobile,
-        gender: req.user.gender,
-        firstName: req.user.firstName,
-        bdayDay: req.user.bdayDay,
-        bdayMonth: req.user.bdayMonth,
-        bdayYear: req.user.bdayYear,
-        age: req.user.age,
-        orientation: req.user.orientation,
-        drinkHabit: req.user.drinkHabit,
-        smokeHabit: req.user.smokeHabit,
-        exercise: req.user.exercise,
-        pets: req.user.pets,
-        educationLevel: req.user.educationLevel,
-        zodiac: req.user.zodiac,
-        height: req.user.height,
-        weight: req.user.weight,
-        job: req.user.job,
-        college: req.user.college,
-        interests: req.user.interests,
-        interestedIn: req.user.interestedIn,
-        lookingFor: req.user.lookingFor,
-        ageRangeMin: req.user.ageRangeMin,
-        ageRangeMax: req.user.ageRangeMax,
-        distanceRange: req.user.distanceRange,
-        profileImage: req.user.profileImage,
-        profileImages: req.user.profileImages || [],
-        completionPercentage: req.user.completionPercentage || 0,
-        bio: req.user.bio || ''
+        id: freshUser._id,
+        _id: freshUser._id,
+        name: freshUser.name,
+        email: freshUser.email,
+        mobile: freshUser.mobile,
+        gender: freshUser.gender,
+        firstName: freshUser.firstName,
+        bdayDay: freshUser.bdayDay,
+        bdayMonth: freshUser.bdayMonth,
+        bdayYear: freshUser.bdayYear,
+        age: freshUser.age,
+        orientation: freshUser.orientation,
+        drinkHabit: freshUser.drinkHabit,
+        smokeHabit: freshUser.smokeHabit,
+        exercise: freshUser.exercise,
+        pets: freshUser.pets,
+        educationLevel: freshUser.educationLevel,
+        zodiac: freshUser.zodiac,
+        height: freshUser.height,
+        weight: freshUser.weight,
+        job: freshUser.job,
+        college: freshUser.college,
+        interests: freshUser.interests || [],
+        languages: freshUser.languages || [],
+        interestedIn: freshUser.interestedIn,
+        lookingFor: freshUser.lookingFor,
+        ageRangeMin: freshUser.ageRangeMin,
+        ageRangeMax: freshUser.ageRangeMax,
+        distanceRange: freshUser.distanceRange,
+        profileImage: freshUser.profileImage,
+        profileImages: freshUser.profileImages || [],
+        completionPercentage: freshUser.completionPercentage || 0,
+        bio: freshUser.bio || '',
+        permanentAddress: freshUser.permanentAddress,
+        currentLocation: freshUser.currentLocation,
+        location: freshUser.location,
+        isLoggedIn: freshUser.isLoggedIn,
+        fcmToken: freshUser.fcmToken,
       }
     });
   } catch (error) {
     console.error('Fetch profile error:', error);
-    return res.status(500).json({ message: 'Server error while fetching profile.' });
+    return res.status(500).json({ message: 'Server error while fetching profile.', error: error.message });
   }
 };
 
@@ -676,18 +688,6 @@ exports.uploadImage = async (req, res) => {
     const file = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
     const bodyImage = req.body?.photo || req.body?.image || req.body?.file || req.body?.base64;
 
-    let result = null;
-
-    if (file && file.path) {
-      console.log('Uploading photo file to Cloudinary:', file.path);
-      result = await cloudinary.uploader.upload(file.path, {
-        folder: 'dating_app_profiles',
-      });
-      if (fs.existsSync(file.path)) {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (e) {}
-      }
     let imageUrl = null;
 
     // Helper to upload to Cloudinary using Dating_Profiles preset
