@@ -2,6 +2,8 @@ const Message = require('../models/Message');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { sendPushNotification } = require('../services/pushNotificationService');
+const cloudinary = require('../config/cloudinary');
+const fs = require('fs');
 
 /**
  * Get all chat messages involving the authenticated user
@@ -206,26 +208,86 @@ exports.clearChat = async (req, res) => {
 };
 
 /**
- * Upload chat media
+ * Upload chat media to Cloudinary (for photos & documents)
  */
 exports.uploadChatMedia = async (req, res) => {
   try {
-    if (!req.file) {
+    const file = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
+    const bodyFile = req.body?.file || req.body?.image || req.body?.photo || req.body?.base64;
+
+    if (!file && !bodyFile) {
       return res.status(400).json({ message: 'No file uploaded.' });
     }
 
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    const fileUrl = `${baseUrl}/uploads/${req.file.filename}`;
+    let mediaUrl = null;
+    let originalName = file?.originalname || 'chat_file';
+    let size = file?.size || 0;
+
+    const doCloudinaryUpload = async (inputData) => {
+      try {
+        console.log('Chat Media: Uploading to Cloudinary unsigned preset Dating_Profiles...');
+        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles');
+        if (cloudRes && cloudRes.secure_url) {
+          return cloudRes.secure_url;
+        }
+      } catch (err1) {
+        console.warn('Chat Media unsigned_upload failed, trying signed upload:', err1.message || err1);
+        try {
+          let resourceType = 'auto';
+          if (file && file.mimetype) {
+            if (file.mimetype.startsWith('video/') || file.mimetype.startsWith('audio/')) {
+              resourceType = 'video';
+            } else if (!file.mimetype.startsWith('image/')) {
+              resourceType = 'raw';
+            }
+          }
+          const cloudRes = await cloudinary.uploader.upload(inputData, {
+            folder: 'dating_app_chat_media',
+            resource_type: resourceType,
+          });
+          if (cloudRes && cloudRes.secure_url) {
+            return cloudRes.secure_url;
+          }
+        } catch (err2) {
+          console.warn('Chat Media signed upload failed:', err2.message || err2);
+        }
+      }
+      return null;
+    };
+
+    if (file && file.buffer) {
+      const mime = file.mimetype || 'image/jpeg';
+      const base64Str = `data:${mime};base64,${file.buffer.toString('base64')}`;
+      mediaUrl = await doCloudinaryUpload(base64Str);
+      if (!mediaUrl) {
+        console.log('Chat Media: Using Base64 Data URI fallback');
+        mediaUrl = base64Str;
+      }
+    } else if (file && file.path) {
+      mediaUrl = await doCloudinaryUpload(file.path);
+      if (fs.existsSync(file.path)) {
+        try { fs.unlinkSync(file.path); } catch (e) {}
+      }
+    } else if (bodyFile && typeof bodyFile === 'string' && bodyFile.length > 20) {
+      mediaUrl = await doCloudinaryUpload(bodyFile);
+      if (!mediaUrl) {
+        mediaUrl = bodyFile;
+      }
+    }
+
+    if (!mediaUrl) {
+      return res.status(500).json({ message: 'Failed to upload chat media to Cloudinary.' });
+    }
 
     return res.status(200).json({
-      message: 'Chat media uploaded successfully',
-      url: fileUrl,
-      fileName: req.file.originalname,
-      fileSize: req.file.size,
+      message: 'Chat media uploaded successfully to Cloudinary',
+      url: mediaUrl,
+      fileName: originalName,
+      fileSize: size,
     });
   } catch (error) {
     console.error('Chat media upload error:', error);
-    return res.status(500).json({ message: 'Server error during chat media upload.' });
+    return res.status(500).json({ message: 'Server error during chat media upload.', error: error.message });
   }
 };
 
