@@ -157,13 +157,33 @@ io.on('connection', (socket) => {
       // Trigger FCM Push Notification for Receiver
       const senderUser = await User.findById(senderId).select('firstName name');
       const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
-      const notificationText = text ? text : (mediaUrl ? '📷 Sent a media file' : '💬 Sent a message');
+
+      let notificationText = '💬 Sent a message';
+      let notificationTitle = `💬 ${senderName}`;
+
+      if (messageType === 'voice') {
+        notificationTitle = `🎤 Voice Message from ${senderName}`;
+        notificationText = '🎤 Sent a voice note / audio message';
+      } else if (messageType === 'call') {
+        notificationTitle = `📞 Voice Call from ${senderName}`;
+        notificationText = text || '📞 Voice call';
+      } else if (messageType === 'image') {
+        notificationText = '📷 Sent a photo';
+      } else if (messageType === 'video') {
+        notificationText = '🎬 Sent a video';
+      } else if (messageType === 'document') {
+        notificationText = '📄 Sent a document';
+      } else if (messageType === 'sticker') {
+        notificationText = '😊 Sent a sticker';
+      } else if (text) {
+        notificationText = text;
+      }
 
       sendPushNotification(receiverId, {
-        title: `💬 ${senderName}`,
+        title: notificationTitle,
         body: notificationText,
         data: {
-          type: 'chat',
+          type: messageType || 'chat',
           senderId: senderId.toString(),
           messageId: newMessage._id.toString(),
           notificationId: newMessage._id.toString(),
@@ -233,9 +253,10 @@ io.on('connection', (socket) => {
   // --- Voice Call Signaling ---
 
   // Handle calling a user
-  socket.on('make_call', ({ callerId, callerName, callerImage, receiverId, offer }) => {
+  socket.on('make_call', async ({ callerId, callerName, callerImage, receiverId, offer }) => {
     if (!callerId || !receiverId) return;
     const receiverSocketId = onlineUsers.get(receiverId.toString());
+
     if (receiverSocketId) {
       io.to(receiverSocketId).emit('incoming_call', {
         callerId: callerId.toString(),
@@ -243,10 +264,52 @@ io.on('connection', (socket) => {
         callerImage,
         offer
       });
+      socket.emit('call_ringing', { status: 'ringing', isOnline: true });
       console.log(`Socket: Voice call offer forwarded from ${callerId} to receiver ${receiverId}`);
     } else {
-      socket.emit('call_failed', { message: 'User is offline' });
-      console.log(`Socket: Call failed from ${callerId} to ${receiverId} (receiver offline)`);
+      console.log(`Socket: Receiver ${receiverId} is offline for call from ${callerId}. Ringing caller & sending FCM push notification.`);
+
+      // Emit ringing status to caller so caller's screen stays on Ringing...
+      socket.emit('call_ringing', { status: 'ringing', isOnline: false });
+
+      // 1. Save missed call message to DB so it shows in chat history
+      try {
+        const missedCallMsg = new Message({
+          senderId: callerId,
+          receiverId: receiverId,
+          text: '📞 Missed voice call',
+          messageType: 'call',
+          mediaUrl: 'missed',
+          status: 'sent'
+        });
+        await missedCallMsg.save();
+
+        const msgData = {
+          _id: missedCallMsg._id,
+          senderId: callerId.toString(),
+          receiverId: receiverId.toString(),
+          text: missedCallMsg.text,
+          messageType: 'call',
+          mediaUrl: 'missed',
+          status: 'sent',
+          createdAt: missedCallMsg.createdAt
+        };
+        socket.emit('message_sent', msgData);
+      } catch (dbErr) {
+        console.error('Error saving missed call message:', dbErr);
+      }
+
+      // 2. Send high priority FCM Push Notification & DB Notification to offline receiver
+      sendPushNotification(receiverId, {
+        title: '📞 Incoming Voice Call',
+        body: `${callerName || 'Someone'} is calling you...`,
+        data: {
+          type: 'incoming_call',
+          senderId: callerId.toString(),
+          callerName: callerName || 'Someone',
+          callerImage: callerImage || ''
+        }
+      }).catch(err => console.error('Voice call FCM push error:', err));
     }
   });
 
