@@ -2,8 +2,14 @@ const Message = require('../models/Message');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { sendPushNotification } = require('../services/pushNotificationService');
-const cloudinary = require('../config/cloudinary');
+const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dwwykeft2',
+  api_key: process.env.CLOUDINARY_API_KEY || '888317163598995',
+  api_secret: process.env.CLOUDINARY_API_SECRET || 'VYck0A_t17ivmkR6DQApA_FU_Nk',
+});
 
 /**
  * Get all chat messages involving the authenticated user
