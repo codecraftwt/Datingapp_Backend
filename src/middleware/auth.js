@@ -15,6 +15,9 @@ const auth = async (req, res, next) => {
     }
 
     const token = authHeader.replace('Bearer ', '').trim();
+    if (!token || token === 'null' || token === 'undefined') {
+      return res.status(401).json({ message: 'No valid token provided, authorization denied.' });
+    }
     let decoded = null;
 
     for (const secret of JWT_SECRETS) {

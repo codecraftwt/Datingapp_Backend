@@ -49,29 +49,37 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Database Connection
 const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/Dating_App';
-mongoose
-  .connect(mongoURI)
-  .then(async () => {
-    console.log('Successfully connected to MongoDB.');
-    try {
-      await User.updateMany(
-        { 'currentLocation.location': { $exists: true }, 'currentLocation.location.coordinates': { $exists: false } },
-        { $unset: { currentLocation: 1 } }
-      );
-      await User.updateMany(
-        { 'permanentAddress.location': { $exists: true }, 'permanentAddress.location.coordinates': { $exists: false } },
-        { $unset: { 'permanentAddress.location': 1 } }
-      );
-      await User.updateMany(
-        { location: { $exists: true }, 'location.coordinates': { $exists: false } },
-        { $unset: { location: 1 } }
-      );
-      console.log('Successfully sanitized existing geo-location documents in database.');
-    } catch (cleanErr) {
-      console.error('Geo cleanup error:', cleanErr);
-    }
-  })
-  .catch((err) => console.error('MongoDB connection error:', err));
+const mongooseOptions = {
+  serverSelectionTimeoutMS: 15000,
+  maxPoolSize: 10,
+  socketTimeoutMS: 45000,
+};
+
+if (mongoose.connection.readyState === 0) {
+  mongoose
+    .connect(mongoURI, mongooseOptions)
+    .then(async () => {
+      console.log('Successfully connected to MongoDB.');
+      try {
+        await User.updateMany(
+          { 'currentLocation.location': { $exists: true }, 'currentLocation.location.coordinates': { $exists: false } },
+          { $unset: { currentLocation: 1 } }
+        );
+        await User.updateMany(
+          { 'permanentAddress.location': { $exists: true }, 'permanentAddress.location.coordinates': { $exists: false } },
+          { $unset: { 'permanentAddress.location': 1 } }
+        );
+        await User.updateMany(
+          { location: { $exists: true }, 'location.coordinates': { $exists: false } },
+          { $unset: { location: 1 } }
+        );
+        console.log('Successfully sanitized existing geo-location documents in database.');
+      } catch (cleanErr) {
+        console.error('Geo cleanup error:', cleanErr);
+      }
+    })
+    .catch((err) => console.error('MongoDB connection error:', err));
+}
 
 // Routes
 const authRoutes = require('./routes/authRoutes');
