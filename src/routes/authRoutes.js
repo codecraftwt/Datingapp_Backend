@@ -6,6 +6,7 @@ const auth = require('../middleware/auth');
 router.post('/register', authController.register);
 router.post('/login', authController.login);
 router.post('/logout', auth, authController.logout);
+router.post('/logout-all-devices', authController.logoutAllDevices);
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 router.put('/change-password', auth, authController.changePassword);

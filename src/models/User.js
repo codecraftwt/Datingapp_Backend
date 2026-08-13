@@ -95,9 +95,13 @@ const UserSchema = new mongoose.Schema(
     searchPreferences: { type: mongoose.Schema.Types.Mixed, default: {} },
     profileImage: { type: String },
     profileImages: [{ type: String }],
+    photos: [{ type: String }],
+    videos: [{ type: String }],
+    media: [{ type: String }],
     completionPercentage: { type: Number, default: 0 },
     bio: { type: String, trim: true },
     isLoggedIn: { type: Boolean, default: false },
+    currentToken: { type: String, default: null },
     lastSeen: { type: Date },
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
@@ -108,6 +112,7 @@ const UserSchema = new mongoose.Schema(
     // Explicitly target the collection already created by the user
     collection: 'Registered',
     timestamps: true,
+    bufferCommands: true,
   }
 );
 

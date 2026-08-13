@@ -33,11 +33,20 @@ try {
   console.warn('Could not write dummy sample_voice.mp3:', err.message);
 }
 
-const storage = multer.memoryStorage();
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '') || (file.mimetype?.startsWith('video/') ? '.mp4' : '.jpg');
+    const uniqueName = `upload_${Date.now()}_${Math.round(Math.random() * 1e9)}${ext}`;
+    cb(null, uniqueName);
+  },
+});
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB max limit for video previews
 });
 
 module.exports = upload;

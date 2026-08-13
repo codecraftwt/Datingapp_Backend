@@ -11,6 +11,17 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET || 'VYck0A_t17ivmkR6DQApA_FU_Nk',
 });
 
+const isBackendVideoUrl = (url) => {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  return (
+    lower.includes('/video/upload/') ||
+    lower.includes('/video/') ||
+    lower.includes('video') ||
+    /\.(mp4|mov|webm|3gp|mkv|avi|m4v|flv)($|\?|#)/i.test(lower)
+  );
+};
+
 
 /**
  * Save/Update user dating profile questionnaire
@@ -44,6 +55,9 @@ exports.saveQuestionnaire = async (req, res) => {
       distanceRange,
       profileImage,
       profileImages,
+      photos: incomingPhotos,
+      videos: incomingVideos,
+      media: incomingMedia,
       bio,
       gender,
       languages,
@@ -68,21 +82,24 @@ exports.saveQuestionnaire = async (req, res) => {
       }
     }
 
-    // Ensure profileImage and profileImages store valid Cloudinary URLs or Data URIs
+    // Ensure profileImage and profileImages store valid Cloudinary URLs, Data URIs, or local /uploads/ URLs
     let finalProfileImages = [];
     if (Array.isArray(profileImages) && profileImages.length > 0) {
       finalProfileImages = await Promise.all(
         profileImages.map(async (img) => {
-          if (typeof img === 'string' && (img.startsWith('http://') || img.startsWith('https://') || img.startsWith('data:image/'))) {
+          if (
+            typeof img === 'string' &&
+            (img.startsWith('http://') || img.startsWith('https://') || img.startsWith('data:image/') || img.startsWith('data:video/'))
+          ) {
             return img;
           }
-          if (typeof img === 'string' && img.startsWith('file://')) {
+          if (typeof img === 'string' && (img.startsWith('file://') || img.startsWith('content://'))) {
             try {
-              const cloudRes = await cloudinary.uploader.unsigned_upload(img, 'Dating_Profiles');
+              const cloudRes = await cloudinary.uploader.unsigned_upload(img, 'Dating_Profiles', { resource_type: 'auto' });
               return cloudRes.secure_url;
             } catch (e) {
               try {
-                const cloudRes = await cloudinary.uploader.upload(img, { folder: 'dating_app_profiles' });
+                const cloudRes = await cloudinary.uploader.upload(img, { folder: 'dating_app_profiles', resource_type: 'auto' });
                 return cloudRes.secure_url;
               } catch (err2) {
                 console.warn('Auto Cloudinary upload error:', err2.message);
@@ -96,17 +113,37 @@ exports.saveQuestionnaire = async (req, res) => {
       finalProfileImages = finalProfileImages.filter(Boolean);
     }
 
-    let finalProfileImage = typeof profileImage === 'string' && (profileImage.startsWith('http') || profileImage.startsWith('data:image/')) ? profileImage : '';
-    if (!finalProfileImage && typeof profileImage === 'string' && profileImage.startsWith('file://')) {
+    // Combine all valid media URLs (from profileImages, photos, videos, and media sent in body)
+    const bodyVideos = Array.isArray(incomingVideos) ? incomingVideos : [];
+    const bodyPhotos = Array.isArray(incomingPhotos) ? incomingPhotos : [];
+    const bodyMedia = Array.isArray(incomingMedia) ? incomingMedia : [];
+
+    const allMediaUrls = Array.from(
+      new Set([
+        ...finalProfileImages,
+        ...bodyPhotos,
+        ...bodyVideos,
+        ...bodyMedia
+      ].filter((p) => p && typeof p === 'string' && p.startsWith('http')))
+    );
+
+    const detectedVideos = allMediaUrls.filter((p) => isBackendVideoUrl(p));
+
+    let finalProfileImage =
+      typeof profileImage === 'string' &&
+      (profileImage.startsWith('http') || profileImage.startsWith('data:image/') || profileImage.startsWith('data:video/'))
+        ? profileImage
+        : '';
+    if (!finalProfileImage && typeof profileImage === 'string' && (profileImage.startsWith('file://') || profileImage.startsWith('content://'))) {
       try {
-        const cloudRes = await cloudinary.uploader.upload(profileImage, { folder: 'dating_app_profiles' });
+        const cloudRes = await cloudinary.uploader.upload(profileImage, { folder: 'dating_app_profiles', resource_type: 'auto' });
         finalProfileImage = cloudRes.secure_url;
       } catch (e) {
         console.warn('Auto Cloudinary upload error for profileImage:', e.message);
       }
     }
-    if (!finalProfileImage && finalProfileImages.length > 0) {
-      finalProfileImage = finalProfileImages[0];
+    if (!finalProfileImage && allMediaUrls.length > 0) {
+      finalProfileImage = allMediaUrls[0];
     }
 
     const setObj = {
@@ -133,7 +170,10 @@ exports.saveQuestionnaire = async (req, res) => {
       ageRangeMax,
       distanceRange,
       profileImage: finalProfileImage,
-      profileImages: finalProfileImages,
+      profileImages: allMediaUrls,
+      photos: allMediaUrls,
+      videos: detectedVideos,
+      media: allMediaUrls,
       bio,
       gender,
       languages,
@@ -141,6 +181,9 @@ exports.saveQuestionnaire = async (req, res) => {
     };
 
     console.log('--- Save Questionnaire Backend Debug ---');
+    console.log('Final saved profileImage:', finalProfileImage);
+    console.log('Final saved profileImages count:', allMediaUrls.length, 'URLs:', allMediaUrls);
+    console.log('Final saved videos count:', detectedVideos.length, 'URLs:', detectedVideos);
     console.log('Incoming latitude:', latitude, 'longitude:', longitude);
 
     if (latitude !== undefined && longitude !== undefined) {
@@ -197,6 +240,9 @@ exports.saveQuestionnaire = async (req, res) => {
         distanceRange: updatedUser.distanceRange,
         profileImage: updatedUser.profileImage,
         profileImages: updatedUser.profileImages || [],
+        photos: updatedUser.photos || updatedUser.profileImages || [],
+        videos: updatedUser.videos || (updatedUser.profileImages || []).filter((p) => isBackendVideoUrl(p)),
+        media: updatedUser.media || updatedUser.profileImages || [],
         completionPercentage: updatedUser.completionPercentage || 0,
         bio: updatedUser.bio || '',
         location: updatedUser.location
@@ -536,6 +582,10 @@ exports.getQuestionnaires = async (req, res) => {
           commonInterestsCount: u.commonInterestsCount || 0,
           matchPercentage: u.matchPercentage || 0,
           image: u.profileImage || '',
+          profileImages: u.profileImages || [],
+          photos: u.photos || u.profileImages || [],
+          videos: u.videos || (u.profileImages || []).filter((p) => isBackendVideoUrl(p)),
+          media: u.media || u.profileImages || [],
           gender: u.gender,
           orientation: u.orientation || '',
           lookingFor: u.lookingFor || '',
@@ -604,6 +654,9 @@ exports.getProfile = async (req, res) => {
         distanceRange: freshUser.distanceRange,
         profileImage: freshUser.profileImage,
         profileImages: freshUser.profileImages || [],
+        photos: freshUser.photos || freshUser.profileImages || [],
+        videos: freshUser.videos || (freshUser.profileImages || []).filter((p) => isBackendVideoUrl(p)),
+        media: freshUser.media || freshUser.profileImages || [],
         completionPercentage: freshUser.completionPercentage || 0,
         bio: freshUser.bio || '',
         permanentAddress: freshUser.permanentAddress,
@@ -690,18 +743,24 @@ exports.uploadImage = async (req, res) => {
 
     let imageUrl = null;
 
-    // Helper to upload to Cloudinary using Dating_Profiles preset
-    const doCloudinaryUpload = async (inputData) => {
+    // Helper to upload photos & videos to Cloudinary using Dating_Profiles preset
+    const doCloudinaryUpload = async (inputData, mimetype = 'image/jpeg') => {
+      const isVideo = mimetype && mimetype.startsWith('video/');
+      const uploadOptions = {
+        folder: 'dating_app_profiles',
+        resource_type: 'auto', // Auto-detect image, video, or audio
+      };
+
       try {
-        console.log('Attempting Cloudinary unsigned_upload with preset Dating_Profiles...');
-        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles');
+        console.log(`Attempting Cloudinary unsigned_upload for ${isVideo ? 'video' : 'photo'}...`);
+        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', { resource_type: 'auto' });
         if (cloudRes && cloudRes.secure_url) {
           return cloudRes.secure_url;
         }
       } catch (err1) {
         console.warn('Cloudinary unsigned_upload failed, trying signed upload:', err1.message || err1);
         try {
-          const cloudRes = await cloudinary.uploader.upload(inputData, { folder: 'dating_app_profiles' });
+          const cloudRes = await cloudinary.uploader.upload(inputData, uploadOptions);
           if (cloudRes && cloudRes.secure_url) {
             return cloudRes.secure_url;
           }
@@ -712,37 +771,43 @@ exports.uploadImage = async (req, res) => {
       return null;
     };
 
-    if (file && file.buffer) {
-      const base64Str = `data:${file.mimetype || 'image/jpeg'};base64,${file.buffer.toString('base64')}`;
-      imageUrl = await doCloudinaryUpload(base64Str);
+    const fileMime = file?.mimetype || 'image/jpeg';
+
+    if (file && file.path) {
+      imageUrl = await doCloudinaryUpload(file.path, fileMime);
       if (!imageUrl) {
-        console.log('Using Base64 Data URI fallback for uploaded image');
-        imageUrl = base64Str;
+        // Fallback: Serve file locally from /uploads directory if Cloudinary upload is unavailable
+        const filename = path.basename(file.path);
+        const protocol = req.protocol || 'http';
+        const host = req.get('host') || 'localhost:5000';
+        imageUrl = `${protocol}://${host}/uploads/${filename}`;
+        console.log('[uploadImage] Using local /uploads/ fallback URL:', imageUrl);
+      } else {
+        // Clean up temp file after Cloudinary upload
+        if (fs.existsSync(file.path)) {
+          try {
+            fs.unlinkSync(file.path);
+          } catch (e) {}
+        }
       }
-    } else if (file && file.path) {
-      imageUrl = await doCloudinaryUpload(file.path);
-      if (fs.existsSync(file.path)) {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (e) {}
-      }
+    } else if (file && file.buffer) {
+      const base64Str = `data:${fileMime};base64,${file.buffer.toString('base64')}`;
+      imageUrl = await doCloudinaryUpload(base64Str, fileMime);
     } else if (bodyImage && typeof bodyImage === 'string' && bodyImage.length > 20) {
-      imageUrl = await doCloudinaryUpload(bodyImage);
-      if (!imageUrl) {
-        imageUrl = bodyImage;
-      }
+      imageUrl = await doCloudinaryUpload(bodyImage, fileMime);
     }
 
-    if (!imageUrl) {
-      return res.status(400).json({ message: 'No file or image data received.' });
+    if (!imageUrl || !imageUrl.startsWith('http')) {
+      return res.status(400).json({ message: 'Cloudinary upload failed. Please check your connection and Cloudinary credentials.' });
     }
 
-    console.log('Final Uploaded Image URL:', imageUrl.substring(0, 80));
+    console.log('Final Cloudinary Upload URL:', imageUrl);
 
     return res.status(200).json({
-      message: 'File uploaded successfully',
+      message: 'File uploaded to Cloudinary successfully',
       url: imageUrl,
       secure_url: imageUrl,
+      mediaType: fileMime.startsWith('video/') ? 'video' : 'image',
     });
   } catch (error) {
     console.error('File upload handler error:', error);
@@ -890,3 +955,24 @@ exports.updateFcmToken = async (req, res) => {
     return res.status(500).json({ message: 'Server error while updating FCM Token.' });
   }
 };
+
+/**
+ * GET /api/profile/questionnaire-options
+ */
+exports.getQuestionnaireOptions = async (req, res) => {
+  try {
+    const { QUESTIONNAIRE_OPTIONS } = require('./questionnaireController');
+    return res.status(200).json({
+      success: true,
+      message: 'Questionnaire questions and options retrieved successfully',
+      options: QUESTIONNAIRE_OPTIONS,
+    });
+  } catch (error) {
+    console.error('Error fetching questionnaire options:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while retrieving questionnaire options',
+    });
+  }
+};
+

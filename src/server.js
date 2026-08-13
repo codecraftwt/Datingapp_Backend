@@ -1,6 +1,9 @@
 const dns = require('dns');
 try {
-  dns.setServers(['8.8.8.8', '8.8.4.4']);
+  dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+  if (dns.setDefaultResultOrder) {
+    dns.setDefaultResultOrder('ipv4first');
+  }
 } catch (e) {
   // Ignore if custom DNS fails
 }
@@ -38,28 +41,50 @@ app.set('io', io);
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     return res.status(400).json({ message: 'Invalid JSON format in request body.' });
+  }
+  if (err && err.status === 413) {
+    return res.status(413).json({ message: 'Uploaded video file size is too large (max 100MB allowed).' });
   }
   next(err);
 });
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// Database Connection
+// Database Connection & Permanent Pool Configuration
 const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/Dating_App';
+
+// Enable Mongoose query buffering so operations wait for pool connection instead of dropping queries
+mongoose.set('bufferCommands', true);
+
 const mongooseOptions = {
-  serverSelectionTimeoutMS: 15000,
-  maxPoolSize: 10,
+  serverSelectionTimeoutMS: 10000,
+  maxPoolSize: 25,
+  minPoolSize: 5,
   socketTimeoutMS: 45000,
+  connectTimeoutMS: 10000,
+  heartbeatFrequencyMS: 10000,
 };
+
+mongoose.connection.on('disconnected', () => {
+  console.warn('[MongoDB] Connection lost. Reconnecting immediately...');
+  mongoose.connect(mongoURI, mongooseOptions).catch((err) => {
+    console.error('[MongoDB] Reconnection attempt error:', err.message);
+  });
+});
+
+mongoose.connection.on('error', (err) => {
+  console.error('[MongoDB] Socket error:', err.message);
+});
 
 if (mongoose.connection.readyState === 0) {
   mongoose
     .connect(mongoURI, mongooseOptions)
     .then(async () => {
-      console.log('Successfully connected to MongoDB.');
+      console.log('Successfully connected to MongoDB with permanent connection pool.');
       try {
         await User.updateMany(
           { 'currentLocation.location': { $exists: true }, 'currentLocation.location.coordinates': { $exists: false } },
@@ -88,9 +113,12 @@ const chatRoutes = require('./routes/chatRoutes');
 const matchRoutes = require('./routes/matchRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const searchRoutes = require('./routes/searchRoutes');
+const questionnaireRoutes = require('./routes/questionnaireRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/profile', profileRoutes);
+app.use('/api/questionnaire', questionnaireRoutes);
+app.use('/api/questionnaires', questionnaireRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/match', matchRoutes);
 app.use('/api/user', matchRoutes);
@@ -130,6 +158,11 @@ io.on('connection', (socket) => {
       console.log(`User ${userId} associated with socket ${socket.id}`);
       // Broadcast online status to all clients
       io.emit('user_status', { userId: userId.toString(), status: 'online' });
+
+      // Send list of all currently online users to the newly joined user
+      socket.emit('online_users_list', {
+        onlineUserIds: Array.from(onlineUsers.keys()),
+      });
 
       // Mark pending 'sent' messages as 'delivered' for this user upon connecting
       try {
@@ -175,10 +208,14 @@ io.on('connection', (socket) => {
       });
       await newMessage.save();
 
+      const senderUser = await User.findById(senderId).select('firstName name');
+      const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
+
       const msgData = {
         _id: newMessage._id,
         senderId: senderId.toString(),
         receiverId: receiverId.toString(),
+        senderName,
         text: newMessage.text,
         messageType: newMessage.messageType,
         mediaUrl: newMessage.mediaUrl,
@@ -204,9 +241,6 @@ io.on('connection', (socket) => {
       socket.emit('message_sent', msgData);
 
       // Trigger FCM Push Notification for Receiver
-      const senderUser = await User.findById(senderId).select('firstName name');
-      const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
-
       let notificationText = '💬 Sent a message';
       let notificationTitle = `💬 ${senderName}`;
 
@@ -441,6 +475,29 @@ io.on('connection', (socket) => {
       }
     }
   });
+});
+
+// Global Express Real-Time Error Handler Middleware
+app.use((err, req, res, next) => {
+  console.error(`[REAL-TIME ERROR HANDLER] ${req.method} ${req.originalUrl} - Error:`, err);
+
+  if (!res.headersSent) {
+    const statusCode = err.status || err.statusCode || 500;
+    res.status(statusCode).json({
+      status: 'SERVER_ERROR',
+      message: err.message || 'An unexpected server error occurred. Please try again.',
+      ...(process.env.NODE_ENV === 'development' ? { stack: err.stack } : {}),
+    });
+  }
+});
+
+// Real-Time Process-Level Crash Protection
+process.on('uncaughtException', (err) => {
+  console.error('[CRITICAL] Uncaught Exception intercepted in real-time:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[CRITICAL] Unhandled Promise Rejection intercepted in real-time:', reason);
 });
 
 // Start Server using http.Server

@@ -1,8 +1,55 @@
+const dns = require('dns');
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+  if (dns.setDefaultResultOrder) {
+    dns.setDefaultResultOrder('ipv4first');
+  }
+} catch (e) {
+  // Ignore DNS override errors
+}
+
+const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const Match = require('../models/Match');
+
+const JWT_SECRETS = [
+  process.env.JWT_SECRET,
+  'super_secret_dating_app_token_key_123!',
+  'fallback_secret',
+].filter(Boolean);
+
+// Helper: Ensure active MongoDB connection before performing operations
+const ensureDbConnection = async () => {
+  if (mongoose.connection.readyState === 1) return;
+
+  // If connection is in progress (readyState === 2), wait for it to complete
+  if (mongoose.connection.readyState === 2) {
+    for (let i = 0; i < 20; i++) {
+      if (mongoose.connection.readyState === 1) return;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    console.log('[AUTH CONTROLLER] MongoDB disconnected (readyState=' + mongoose.connection.readyState + '). Reconnecting...');
+    const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/Dating_App';
+    try {
+      await mongoose.connect(mongoURI, {
+        serverSelectionTimeoutMS: 8000,
+        maxPoolSize: 25,
+        minPoolSize: 5,
+        socketTimeoutMS: 45000,
+      });
+      console.log('[AUTH CONTROLLER] MongoDB connected successfully.');
+    } catch (connErr) {
+      console.error('[AUTH CONTROLLER] MongoDB connection failed:', connErr.message);
+      throw new Error('Database connection failed. Please check your network connection or MongoDB status.');
+    }
+  }
+};
 
 /**
  * Register a new user
@@ -86,7 +133,15 @@ exports.register = async (req, res) => {
     ) {
       const tempLat = parseFloat(tempLatitude);
       const tempLng = parseFloat(tempLongitude);
-      if (!isNaN(tempLat) && !isNaN(tempLng)) {
+      if (
+        !isNaN(tempLat) &&
+        !isNaN(tempLng) &&
+        tempLat >= -90 &&
+        tempLat <= 90 &&
+        tempLng >= -180 &&
+        tempLng <= 180 &&
+        !(tempLat === 0 && tempLng === 0)
+      ) {
         currentLocationObj = {
           location: {
             type: 'Point',
@@ -118,6 +173,9 @@ exports.register = async (req, res) => {
       { expiresIn: '7d' }
     );
 
+    newUser.currentToken = token;
+    await newUser.save();
+
     return res.status(201).json({
       message: 'User registered successfully',
       token,
@@ -142,15 +200,27 @@ exports.register = async (req, res) => {
  */
 exports.login = async (req, res) => {
   try {
-    const { email, password, fcmToken } = req.body;
+    const { email, password, fcmToken, forceLogoutAll } = req.body || {};
+    console.log('[AUTH CONTROLLER] Login attempt for email:', email);
+
+    // Ensure active MongoDB connection before querying
+    await ensureDbConnection();
 
     if (!email || !password) {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
 
     const cleanEmail = email.trim().toLowerCase();
-    const user = await User.findOne({ email: { $regex: new RegExp(`^${cleanEmail}$`, 'i') } });
-    if (!user) {
+    // Escape special regex characters in email to prevent invalid regular expression errors
+    const safeRegexEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const user = await User.findOne({
+      $or: [
+        { email: cleanEmail },
+        { email: { $regex: new RegExp(`^${safeRegexEmail}$`, 'i') } }
+      ]
+    });
+
+    if (!user || !user.password) {
       return res.status(400).json({ message: 'Invalid email or password.' });
     }
 
@@ -159,18 +229,31 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Invalid email or password.' });
     }
 
+    // Single-device login check: If active token or session exists and forceLogoutAll is false, block login
+    if ((user.currentToken || user.isLoggedIn) && forceLogoutAll !== true) {
+      console.log(`[AUTH CONTROLLER] Blocking login for ${user.email} (Active session exists on another device).`);
+      return res.status(409).json({
+        status: 'DEVICE_LIMIT_REACHED',
+        message: 'User is already logged in, please Logout from all devices.',
+      });
+    }
+
     const token = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET || 'super_secret_dating_app_token_key_123!',
       { expiresIn: '7d' }
     );
 
-    const updateFields = { isLoggedIn: true };
-    if (fcmToken) {
-      updateFields.fcmToken = fcmToken;
+    // Safely update user status, currentToken, and FCM token
+    try {
+      const updateFields = { isLoggedIn: true, currentToken: token };
+      if (fcmToken) {
+        updateFields.fcmToken = fcmToken;
+      }
+      await User.findByIdAndUpdate(user._id, { $set: updateFields });
+    } catch (updateErr) {
+      console.warn('[AUTH CONTROLLER] Non-fatal user status update error during login:', updateErr.message);
     }
-
-    await User.findByIdAndUpdate(user._id, { $set: updateFields });
 
     return res.status(200).json({
       message: 'Login successful',
@@ -382,5 +465,129 @@ exports.deleteAccount = async (req, res) => {
   } catch (error) {
     console.error('Delete account error:', error);
     return res.status(500).json({ message: 'Server error during account deletion.' });
+  }
+};
+
+/**
+ * Logout user from all devices (clears currentToken and isLoggedIn)
+ */
+exports.logoutAllDevices = async (req, res) => {
+  try {
+    await ensureDbConnection();
+    const { email, password } = req.body || {};
+    let userId = req.user?._id || req.user?.id;
+
+    // 1. Try extracting userId from Authorization Bearer token header if available
+    if (!userId) {
+      const authHeader = req.header('Authorization');
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.replace('Bearer ', '').trim();
+        if (token && token !== 'null' && token !== 'undefined') {
+          for (const secret of JWT_SECRETS) {
+            try {
+              const decoded = jwt.verify(token, secret);
+              if (decoded && (decoded.userId || decoded.id)) {
+                userId = decoded.userId || decoded.id;
+                break;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    }
+
+    // 2. Fallback to credentials check (email & password) if token not provided/valid
+    if (!userId && email && password) {
+      const cleanEmail = email.trim().toLowerCase();
+      const safeRegexEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const user = await User.findOne({
+        $or: [
+          { email: cleanEmail },
+          { email: { $regex: new RegExp(`^${safeRegexEmail}$`, 'i') } }
+        ]
+      });
+
+      if (user && user.password) {
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (isMatch) {
+          userId = user._id;
+        }
+      }
+    }
+
+    if (!userId) {
+      return res.status(400).json({ message: 'Invalid credentials or user identity. Please provide a valid session token or login credentials.' });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        $set: {
+          currentToken: null,
+          isLoggedIn: false,
+          fcmToken: null,
+        },
+      },
+      { new: true }
+    );
+
+    console.log(`[AUTH CONTROLLER] Successfully logged out user ${userId} (${updatedUser?.email || 'user'}) from all devices.`);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Successfully logged out from all devices.',
+      user: updatedUser ? {
+        id: updatedUser._id,
+        email: updatedUser.email,
+        isLoggedIn: false,
+        currentToken: null,
+      } : null,
+    });
+  } catch (error) {
+    console.error('Logout all devices error:', error);
+    return res.status(500).json({ message: 'Server error during logout from all devices.', error: error.message });
+  }
+};
+
+/**
+ * Logout user from current session
+ */
+exports.logout = async (req, res) => {
+  try {
+    await ensureDbConnection();
+    let userId = req.user?._id || req.user?.id;
+
+    if (!userId) {
+      const authHeader = req.header('Authorization');
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.replace('Bearer ', '').trim();
+        if (token && token !== 'null' && token !== 'undefined') {
+          for (const secret of JWT_SECRETS) {
+            try {
+              const decoded = jwt.verify(token, secret);
+              if (decoded && (decoded.userId || decoded.id)) {
+                userId = decoded.userId || decoded.id;
+                break;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    }
+
+    if (userId) {
+      await User.findByIdAndUpdate(userId, {
+        $set: {
+          currentToken: null,
+          isLoggedIn: false,
+          fcmToken: null,
+        },
+      });
+    }
+
+    return res.status(200).json({ success: true, message: 'Logged out successfully.' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    return res.status(500).json({ message: 'Server error during logout.', error: error.message });
   }
 };

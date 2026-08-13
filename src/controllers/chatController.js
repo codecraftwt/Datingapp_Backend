@@ -261,18 +261,26 @@ exports.uploadChatMedia = async (req, res) => {
       return null;
     };
 
-    if (file && file.buffer) {
+    if (file && file.path) {
+      mediaUrl = await doCloudinaryUpload(file.path);
+      if (!mediaUrl) {
+        const filename = path.basename(file.path);
+        const protocol = req.protocol || 'http';
+        const host = req.get('host') || 'localhost:5000';
+        mediaUrl = `${protocol}://${host}/uploads/${filename}`;
+        console.log('[uploadChatMedia] Using local /uploads/ fallback URL:', mediaUrl);
+      } else {
+        if (fs.existsSync(file.path)) {
+          try { fs.unlinkSync(file.path); } catch (e) {}
+        }
+      }
+    } else if (file && file.buffer) {
       const mime = file.mimetype || 'image/jpeg';
       const base64Str = `data:${mime};base64,${file.buffer.toString('base64')}`;
       mediaUrl = await doCloudinaryUpload(base64Str);
       if (!mediaUrl) {
         console.log('Chat Media: Using Base64 Data URI fallback');
         mediaUrl = base64Str;
-      }
-    } else if (file && file.path) {
-      mediaUrl = await doCloudinaryUpload(file.path);
-      if (fs.existsSync(file.path)) {
-        try { fs.unlinkSync(file.path); } catch (e) {}
       }
     } else if (bodyFile && typeof bodyFile === 'string' && bodyFile.length > 20) {
       mediaUrl = await doCloudinaryUpload(bodyFile);
