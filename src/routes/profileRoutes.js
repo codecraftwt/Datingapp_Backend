@@ -21,6 +21,18 @@ router.post(['/upload', '/uploads'], auth, upload.any(), (req, res, next) => {
 router.post('/remove-photo', auth, profileController.removeProfilePhoto);
 router.post('/remove-profile', auth, profileController.removeProfile);
 router.put('/fcm-token', auth, profileController.updateFcmToken);
+router.put('/hide-media', auth, profileController.hideProfileMedia);
+router.post('/hide-media', auth, profileController.hideProfileMedia);
+router.put('/hide', auth, profileController.hideProfileMedia);
+router.post('/hide', auth, profileController.hideProfileMedia);
+
+router.put('/unhide-media', auth, profileController.unhideProfileMedia);
+router.post('/unhide-media', auth, profileController.unhideProfileMedia);
+router.put('/unhide', auth, profileController.unhideProfileMedia);
+router.post('/unhide', auth, profileController.unhideProfileMedia);
+
+router.get('/hidden-media', auth, profileController.getHiddenMedia);
+router.get('/hidden', auth, profileController.getHiddenMedia);
 
 // Map DELETE /profile to deleteAccount for backward compatibility with the frontend
 router.delete('/profile', auth, authController.deleteAccount);

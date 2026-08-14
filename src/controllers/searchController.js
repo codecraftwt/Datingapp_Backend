@@ -312,22 +312,29 @@ exports.advancedSearch = async (req, res) => {
     const startIndex = (currentPage - 1) * pageSize;
     const paginatedUsers = filteredUsers.slice(startIndex, startIndex + pageSize);
 
-    // Format output users to exclude sensitive fields
-    const formattedUsers = paginatedUsers.map((user) => ({
-      _id: user._id,
-      name: user.name,
-      firstName: user.firstName,
-      age: user.age,
-      gender: user.gender,
-      job: user.job,
-      college: user.college,
-      bio: user.bio,
-      profileImage: user.profileImage,
-      profileImages: user.profileImages || [],
-      photos: user.photos || user.profileImages || [],
-      videos: user.videos || (user.profileImages || []).filter((p) => p && (p.includes('/video/') || p.includes('video') || /\.(mp4|mov|webm|3gp|mkv)($|\?)/i.test(p))),
-      media: user.media || user.profileImages || [],
-      interests: user.interests || [],
+    // Format output users to exclude sensitive fields and hidden media items
+    const formattedUsers = paginatedUsers.map((user) => {
+      const hiddenSet = new Set(Array.isArray(user.hiddenMedia) ? user.hiddenMedia : []);
+      const publicProfileImages = (user.profileImages || []).filter((p) => !hiddenSet.has(p));
+      const publicPhotos = (user.photos || publicProfileImages).filter((p) => !hiddenSet.has(p));
+      const publicVideos = (user.videos || (user.profileImages || []).filter((p) => p && (p.includes('/video/') || p.includes('video') || /\.(mp4|mov|webm|3gp|mkv)($|\?)/i.test(p)))).filter((p) => !hiddenSet.has(p));
+      const publicMedia = (user.media || publicProfileImages).filter((p) => !hiddenSet.has(p));
+
+      return {
+        _id: user._id,
+        name: user.name,
+        firstName: user.firstName,
+        age: user.age,
+        gender: user.gender,
+        job: user.job,
+        college: user.college,
+        bio: user.bio,
+        profileImage: publicProfileImages[0] || user.profileImage,
+        profileImages: publicProfileImages,
+        photos: publicPhotos,
+        videos: publicVideos,
+        media: publicMedia,
+        interests: user.interests || [],
       languages: user.languages || [],
       commonInterests: user.commonInterests || [],
       commonInterestsCount: user.commonInterestsCount || 0,
@@ -336,13 +343,22 @@ exports.advancedSearch = async (req, res) => {
       calculatedDistanceKm: user.calculatedDistanceKm,
       drinkHabit: user.drinkHabit,
       smokeHabit: user.smokeHabit,
-      exercise: user.exercise,
-      pets: user.pets,
-      educationLevel: user.educationLevel,
-      zodiac: user.zodiac,
-      lookingFor: user.lookingFor,
-      orientation: user.orientation,
-    }));
+        languages: user.languages || [],
+        commonInterests: user.commonInterests || [],
+        commonInterestsCount: user.commonInterestsCount || 0,
+        commonLanguages: user.commonLanguages || [],
+        matchPercentage: user.matchPercentage || 0,
+        calculatedDistanceKm: user.calculatedDistanceKm,
+        drinkHabit: user.drinkHabit,
+        smokeHabit: user.smokeHabit,
+        exercise: user.exercise,
+        pets: user.pets,
+        educationLevel: user.educationLevel,
+        zodiac: user.zodiac,
+        lookingFor: user.lookingFor,
+        orientation: user.orientation,
+      };
+    });
 
     return res.status(200).json({
       success: true,

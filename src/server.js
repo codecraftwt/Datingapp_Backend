@@ -116,7 +116,7 @@ const searchRoutes = require('./routes/searchRoutes');
 const questionnaireRoutes = require('./routes/questionnaireRoutes');
 
 app.use('/api/auth', authRoutes);
-app.use('/api/profile', profileRoutes);
+app.use(['/api/profile', '/api/profil'], profileRoutes);
 app.use('/api/questionnaire', questionnaireRoutes);
 app.use('/api/questionnaires', questionnaireRoutes);
 app.use('/api/chat', chatRoutes);

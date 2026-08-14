@@ -98,6 +98,7 @@ const UserSchema = new mongoose.Schema(
     photos: [{ type: String }],
     videos: [{ type: String }],
     media: [{ type: String }],
+    hiddenMedia: [{ type: String }],
     completionPercentage: { type: Number, default: 0 },
     bio: { type: String, trim: true },
     isLoggedIn: { type: Boolean, default: false },

@@ -567,9 +567,17 @@ exports.getQuestionnaires = async (req, res) => {
           distanceText = `${formatted} km away`;
         }
 
+        const hiddenSet = new Set(Array.isArray(u.hiddenMedia) ? u.hiddenMedia : []);
+        const publicProfileImages = (u.profileImages || []).filter((p) => !hiddenSet.has(p));
+        const publicPhotos = (u.photos || publicProfileImages).filter((p) => !hiddenSet.has(p));
+        const publicVideos = (u.videos || (u.profileImages || []).filter((p) => isBackendVideoUrl(p))).filter((p) => !hiddenSet.has(p));
+        const publicMedia = (u.media || publicProfileImages).filter((p) => !hiddenSet.has(p));
+
         return {
-          id: u._id ? u._id.toString() : u.id,
+          id: u._id,
+          _id: u._id,
           name: u.firstName || u.name,
+          firstName: u.firstName,
           email: u.email,
           bdayDay: u.bdayDay,
           bdayMonth: u.bdayMonth,
@@ -581,11 +589,11 @@ exports.getQuestionnaires = async (req, res) => {
           commonInterests: u.commonInterests || [],
           commonInterestsCount: u.commonInterestsCount || 0,
           matchPercentage: u.matchPercentage || 0,
-          image: u.profileImage || '',
-          profileImages: u.profileImages || [],
-          photos: u.photos || u.profileImages || [],
-          videos: u.videos || (u.profileImages || []).filter((p) => isBackendVideoUrl(p)),
-          media: u.media || u.profileImages || [],
+          image: publicProfileImages[0] || u.profileImage || '',
+          profileImages: publicProfileImages,
+          photos: publicPhotos,
+          videos: publicVideos,
+          media: publicMedia,
           gender: u.gender,
           orientation: u.orientation || '',
           lookingFor: u.lookingFor || '',
@@ -657,6 +665,7 @@ exports.getProfile = async (req, res) => {
         photos: freshUser.photos || freshUser.profileImages || [],
         videos: freshUser.videos || (freshUser.profileImages || []).filter((p) => isBackendVideoUrl(p)),
         media: freshUser.media || freshUser.profileImages || [],
+        hiddenMedia: freshUser.hiddenMedia || [],
         completionPercentage: freshUser.completionPercentage || 0,
         bio: freshUser.bio || '',
         permanentAddress: freshUser.permanentAddress,
@@ -745,15 +754,16 @@ exports.uploadImage = async (req, res) => {
 
     // Helper to upload photos & videos to Cloudinary using Dating_Profiles preset
     const doCloudinaryUpload = async (inputData, mimetype = 'image/jpeg') => {
-      const isVideo = mimetype && mimetype.startsWith('video/');
+      const isVideo = mimetype && (mimetype.startsWith('video/') || mimetype.endsWith('.mp4') || mimetype.endsWith('.mov'));
+      const resType = isVideo ? 'video' : 'auto';
       const uploadOptions = {
         folder: 'dating_app_profiles',
-        resource_type: 'auto', // Auto-detect image, video, or audio
+        resource_type: resType,
       };
 
       try {
         console.log(`Attempting Cloudinary unsigned_upload for ${isVideo ? 'video' : 'photo'}...`);
-        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', { resource_type: 'auto' });
+        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', { resource_type: resType });
         if (cloudRes && cloudRes.secure_url) {
           return cloudRes.secure_url;
         }
@@ -976,3 +986,79 @@ exports.getQuestionnaireOptions = async (req, res) => {
   }
 };
 
+/**
+ * PUT /api/profile/hide-media
+ * Body: { mediaUrl }
+ * Adds mediaUrl to req.user's hiddenMedia array
+ */
+exports.hideProfileMedia = async (req, res) => {
+  try {
+    const { mediaUrl } = req.body;
+    if (!mediaUrl || typeof mediaUrl !== 'string') {
+      return res.status(400).json({ success: false, message: 'mediaUrl is required.' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $addToSet: { hiddenMedia: mediaUrl } },
+      { new: true }
+    ).select('-password');
+
+    return res.status(200).json({
+      success: true,
+      message: 'Media hidden successfully.',
+      hiddenMedia: user ? (user.hiddenMedia || []) : [],
+      user,
+    });
+  } catch (error) {
+    console.error('hideProfileMedia error:', error);
+    return res.status(500).json({ success: false, message: 'Server error while hiding media.' });
+  }
+};
+
+/**
+ * PUT /api/profile/unhide-media
+ * Body: { mediaUrl }
+ * Removes mediaUrl from req.user's hiddenMedia array
+ */
+exports.unhideProfileMedia = async (req, res) => {
+  try {
+    const { mediaUrl } = req.body;
+    if (!mediaUrl || typeof mediaUrl !== 'string') {
+      return res.status(400).json({ success: false, message: 'mediaUrl is required.' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $pull: { hiddenMedia: mediaUrl } },
+      { new: true }
+    ).select('-password');
+
+    return res.status(200).json({
+      success: true,
+      message: 'Media unhidden successfully.',
+      hiddenMedia: user ? (user.hiddenMedia || []) : [],
+      user,
+    });
+  } catch (error) {
+    console.error('unhideProfileMedia error:', error);
+    return res.status(500).json({ success: false, message: 'Server error while unhiding media.' });
+  }
+};
+
+/**
+ * GET /api/profile/hidden-media
+ * Returns array of hidden media URLs for current user
+ */
+exports.getHiddenMedia = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('hiddenMedia');
+    return res.status(200).json({
+      success: true,
+      hiddenMedia: user ? (user.hiddenMedia || []) : [],
+    });
+  } catch (error) {
+    console.error('getHiddenMedia error:', error);
+    return res.status(500).json({ success: false, message: 'Server error fetching hidden media.' });
+  }
+};
