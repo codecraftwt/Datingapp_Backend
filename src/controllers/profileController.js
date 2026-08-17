@@ -4,6 +4,7 @@ const Match = require('../models/Match');
 const Message = require('../models/Message');
 const Block = require('../models/Block');
 const fs = require('fs');
+const path = require('path');
 const cloudinary = require('cloudinary').v2;
 
 cloudinary.config({
@@ -134,7 +135,7 @@ exports.saveQuestionnaire = async (req, res) => {
       typeof profileImage === 'string' &&
       (profileImage.startsWith('http') || profileImage.startsWith('data:image/') || profileImage.startsWith('data:video/'))
         ? profileImage
-        : '';
+        : null;
     if (!finalProfileImage && typeof profileImage === 'string' && (profileImage.startsWith('file://') || profileImage.startsWith('content://'))) {
       try {
         const cloudRes = await cloudinary.uploader.upload(profileImage, { folder: 'dating_app_profiles', resource_type: 'auto' });
@@ -142,9 +143,6 @@ exports.saveQuestionnaire = async (req, res) => {
       } catch (e) {
         console.warn('Auto Cloudinary upload error for profileImage:', e.message);
       }
-    }
-    if (!finalProfileImage && allMediaUrls.length > 0) {
-      finalProfileImage = allMediaUrls[0];
     }
 
     const setObj = {
@@ -437,6 +435,13 @@ exports.getQuestionnaires = async (req, res) => {
 
     let users = [];
 
+    let geoKey = 'location';
+    if (hasCurrentLocation) {
+      geoKey = 'currentLocation.location';
+    } else if (hasPermanentLocation) {
+      geoKey = 'permanentAddress.location';
+    }
+
     if (hasUserLocation) {
       const userLng = activeUserCoordinates[0];
       const userLat = activeUserCoordinates[1];
@@ -448,6 +453,7 @@ exports.getQuestionnaires = async (req, res) => {
               near: { type: 'Point', coordinates: [userLng, userLat] },
               distanceField: 'calculatedDistanceMeters',
               maxDistance: maxDistanceMeters,
+              key: geoKey,
               spherical: true,
               query: mongoQuery
             }
@@ -1004,9 +1010,8 @@ exports.removeProfilePhoto = async (req, res) => {
     }
     user.profileImages = updatedImages;
 
-    if (user.profileImage === imageUrl) {
-      const nextImage = updatedImages.find(img => img !== null) || null;
-      user.profileImage = nextImage;
+    if (user.profileImage === imageUrl || index === 0) {
+      user.profileImage = null;
     }
 
     try {
@@ -1214,5 +1219,260 @@ exports.getHiddenMedia = async (req, res) => {
   } catch (error) {
     console.error('getHiddenMedia error:', error);
     return res.status(500).json({ success: false, message: 'Server error fetching hidden media.' });
+  }
+};
+
+/**
+ * POST / PUT /api/profile/main-photo
+ * Upload or update main avatar photo (Slot #1)
+ */
+exports.uploadMainPhoto = async (req, res) => {
+  try {
+    const file = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
+    let imageUrl = req.body?.imageUrl || req.body?.photo || req.body?.url;
+
+    if (file && file.path) {
+      try {
+        const cloudRes = await cloudinary.uploader.unsigned_upload(file.path, 'Dating_Profiles', { resource_type: 'image' });
+        if (cloudRes && cloudRes.secure_url) imageUrl = cloudRes.secure_url;
+      } catch (cErr) {
+        const signedRes = await cloudinary.uploader.upload(file.path, { folder: 'dating_app_profiles' });
+        if (signedRes && signedRes.secure_url) imageUrl = signedRes.secure_url;
+      }
+    }
+
+    if (!imageUrl) {
+      return res.status(400).json({ success: false, message: 'No valid image file or URL provided for main profile photo.' });
+    }
+
+    const currentUser = await User.findById(req.user._id);
+    const updatedProfileImages = Array.isArray(currentUser?.profileImages) ? [...currentUser.profileImages] : [];
+    if (updatedProfileImages.length > 0) {
+      updatedProfileImages[0] = imageUrl;
+    } else {
+      updatedProfileImages.push(imageUrl);
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: {
+          profileImage: imageUrl,
+          profileImages: updatedProfileImages,
+        },
+      },
+      { new: true }
+    ).select('-password');
+
+    return res.status(200).json({
+      success: true,
+      message: 'Main profile photo updated successfully',
+      profileImage: imageUrl,
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error('uploadMainPhoto error:', error);
+    return res.status(500).json({ success: false, message: 'Server error updating main profile photo.' });
+  }
+};
+
+/**
+ * DELETE /api/profile/main-photo
+ * Clears main profile photo (Slot #1 remains blank)
+ */
+exports.removeMainPhoto = async (req, res) => {
+  try {
+    const currentUser = await User.findById(req.user._id);
+    const updatedProfileImages = Array.isArray(currentUser?.profileImages) ? [...currentUser.profileImages] : [];
+    if (updatedProfileImages.length > 0) {
+      updatedProfileImages[0] = null;
+    }
+
+    const updatedPhotos = Array.isArray(currentUser?.photos) ? [...currentUser.photos] : [];
+    if (updatedPhotos.length > 0) {
+      updatedPhotos[0] = null;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: {
+          profileImage: null,
+          profileImages: updatedProfileImages,
+          photos: updatedPhotos,
+        },
+      },
+      { new: true }
+    ).select('-password');
+
+    return res.status(200).json({
+      success: true,
+      message: 'Main profile photo removed successfully. Slot #1 is now blank.',
+      profileImage: null,
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error('removeMainPhoto error:', error);
+    return res.status(500).json({ success: false, message: 'Server error removing main profile photo.' });
+  }
+};
+
+/**
+ * POST / PUT /api/profile/gallery-media
+ * Upload or update photo/video clip for gallery slots (Slots #2 - #9)
+ */
+exports.uploadGalleryMedia = async (req, res) => {
+  try {
+    const slotIndex = parseInt(req.body?.slotIndex ?? req.params?.slotIndex ?? 1, 10);
+    const file = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
+    let mediaUrl = req.body?.mediaUrl || req.body?.photo || req.body?.url;
+
+    if (file && file.path) {
+      const mime = file.mimetype || 'image/jpeg';
+      const isVideo = mime.startsWith('video/') || /\.(mp4|mov|webm|3gp|mkv|avi|m4v)($|\?)/i.test(file.originalname || '');
+      const resType = isVideo ? 'video' : 'auto';
+
+      try {
+        console.log(`[uploadGalleryMedia] Uploading ${resType} to Cloudinary...`, file.path);
+        const cloudRes = await cloudinary.uploader.unsigned_upload(file.path, 'Dating_Profiles', { resource_type: resType });
+        if (cloudRes && cloudRes.secure_url) {
+          mediaUrl = cloudRes.secure_url;
+        }
+      } catch (cErr) {
+        console.warn('[uploadGalleryMedia] unsigned_upload failed, attempting signed upload:', cErr.message);
+        try {
+          const signedRes = await cloudinary.uploader.upload(file.path, { folder: 'dating_app_profiles', resource_type: resType });
+          if (signedRes && signedRes.secure_url) {
+            mediaUrl = signedRes.secure_url;
+          }
+        } catch (sErr) {
+          console.error('[uploadGalleryMedia] signed upload also failed:', sErr.message);
+        }
+      }
+
+      // Automatically apply 15-second video trim transformation to Cloudinary URL
+      if (mediaUrl && isVideo && mediaUrl.includes('cloudinary.com') && mediaUrl.includes('/video/upload/')) {
+        if (!mediaUrl.includes('/so_0,eo_15/') && !mediaUrl.includes('/eo_15/')) {
+          mediaUrl = mediaUrl.replace('/video/upload/', '/video/upload/so_0,eo_15/');
+        }
+      }
+    }
+
+    if (!mediaUrl) {
+      return res.status(400).json({ success: false, message: 'No media file or URL provided for gallery slot.' });
+    }
+
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    }
+
+    const currentUser = await User.findById(req.user._id);
+    if (!currentUser) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    const photosArr = Array.isArray(currentUser.photos) ? [...currentUser.photos] : [];
+    photosArr[slotIndex] = mediaUrl;
+
+    const mediaArr = Array.isArray(currentUser.media) ? [...currentUser.media] : [];
+    mediaArr[slotIndex] = mediaUrl;
+
+    const videosArr = Array.isArray(currentUser.videos) ? [...currentUser.videos] : [];
+    if (mediaUrl.includes('video') || /\.(mp4|mov|webm)($|\?)/i.test(mediaUrl)) {
+      if (!videosArr.includes(mediaUrl)) {
+        videosArr.push(mediaUrl);
+      }
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: {
+          photos: photosArr,
+          media: mediaArr,
+          videos: videosArr,
+        },
+      },
+      { new: true }
+    ).select('-password');
+
+    return res.status(200).json({
+      success: true,
+      message: `Gallery slot #${slotIndex + 1} updated successfully`,
+      mediaUrl,
+      url: mediaUrl,
+      secure_url: mediaUrl,
+      slotIndex,
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error('[uploadGalleryMedia] Error:', error);
+    return res.status(500).json({ success: false, message: 'Server error updating gallery media.', error: error.message || String(error) });
+  }
+};
+
+/**
+ * DELETE /api/profile/gallery-media/:slotIndex
+ * Removes item from specific gallery slot
+ */
+exports.removeGalleryMedia = async (req, res) => {
+  try {
+    const slotIndex = parseInt(req.params?.slotIndex ?? req.body?.slotIndex ?? 1, 10);
+    const currentUser = await User.findById(req.user._id);
+
+    const photosArr = Array.isArray(currentUser?.photos) ? [...currentUser.photos] : [];
+    if (slotIndex < photosArr.length) {
+      photosArr[slotIndex] = null;
+    }
+
+    const mediaArr = Array.isArray(currentUser?.media) ? [...currentUser.media] : [];
+    if (slotIndex < mediaArr.length) {
+      mediaArr[slotIndex] = null;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: {
+          photos: photosArr,
+          media: mediaArr,
+        },
+      },
+      { new: true }
+    ).select('-password');
+
+    return res.status(200).json({
+      success: true,
+      message: `Gallery slot #${slotIndex + 1} cleared successfully`,
+      slotIndex,
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error('removeGalleryMedia error:', error);
+    return res.status(500).json({ success: false, message: 'Server error clearing gallery media.' });
+  }
+};
+
+/**
+ * GET /api/profile/gallery-preview
+ * Retrieves clean media list for gallery preview
+ */
+exports.getGalleryPreview = async (req, res) => {
+  try {
+    const currentUser = await User.findById(req.user._id).select('profileImage profileImages photos videos media hiddenMedia');
+    const hiddenSet = new Set(Array.isArray(currentUser?.hiddenMedia) ? currentUser.hiddenMedia : []);
+
+    const rawPhotos = Array.isArray(currentUser?.photos) ? currentUser.photos : [];
+    const validPhotos = rawPhotos.filter(p => typeof p === 'string' && p.trim().length > 0 && !hiddenSet.has(p));
+
+    return res.status(200).json({
+      success: true,
+      mainPhoto: hiddenSet.has(currentUser?.profileImage) ? null : (currentUser?.profileImage || null),
+      galleryPhotos: validPhotos,
+      hiddenMedia: Array.from(hiddenSet),
+    });
+  } catch (error) {
+    console.error('getGalleryPreview error:', error);
+    return res.status(500).json({ success: false, message: 'Server error fetching gallery preview.' });
   }
 };
