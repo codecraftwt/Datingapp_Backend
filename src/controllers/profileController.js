@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Match = require('../models/Match');
 const Message = require('../models/Message');
@@ -568,10 +569,19 @@ exports.getQuestionnaires = async (req, res) => {
         }
 
         const hiddenSet = new Set(Array.isArray(u.hiddenMedia) ? u.hiddenMedia : []);
-        const publicProfileImages = (u.profileImages || []).filter((p) => !hiddenSet.has(p));
-        const publicPhotos = (u.photos || publicProfileImages).filter((p) => !hiddenSet.has(p));
-        const publicVideos = (u.videos || (u.profileImages || []).filter((p) => isBackendVideoUrl(p))).filter((p) => !hiddenSet.has(p));
-        const publicMedia = (u.media || publicProfileImages).filter((p) => !hiddenSet.has(p));
+
+        const rawProfileImages = Array.isArray(u.profileImages) && u.profileImages.length > 0
+          ? u.profileImages
+          : (u.profileImage ? [u.profileImage] : []);
+
+        const publicProfileImages = rawProfileImages.filter((p) => p && !hiddenSet.has(p));
+        const publicPhotos = (u.photos || publicProfileImages).filter((p) => p && !hiddenSet.has(p));
+        const publicVideos = (u.videos || (u.profileImages || []).filter((p) => isBackendVideoUrl(p))).filter((p) => p && !hiddenSet.has(p));
+        const publicMedia = (u.media || publicPhotos).filter((p) => p && !hiddenSet.has(p));
+
+        const safeProfileImage = hiddenSet.has(u.profileImage)
+          ? (publicProfileImages[0] || publicPhotos[0] || '')
+          : (u.profileImage || publicProfileImages[0] || publicPhotos[0] || '');
 
         return {
           id: u._id,
@@ -589,7 +599,8 @@ exports.getQuestionnaires = async (req, res) => {
           commonInterests: u.commonInterests || [],
           commonInterestsCount: u.commonInterestsCount || 0,
           matchPercentage: u.matchPercentage || 0,
-          image: publicProfileImages[0] || u.profileImage || '',
+          image: safeProfileImage,
+          profileImage: safeProfileImage,
           profileImages: publicProfileImages,
           photos: publicPhotos,
           videos: publicVideos,
@@ -682,6 +693,122 @@ exports.getProfile = async (req, res) => {
 };
 
 /**
+ * Get user profile by specified User ID
+ */
+exports.getUserById = async (req, res) => {
+  try {
+    const targetUserId = req.params.userId;
+    if (!targetUserId || !mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(200).json({
+        message: 'Mock or invalid user ID; using local profile attributes',
+        user: null
+      });
+    }
+
+    const targetUser = await User.findById(targetUserId).select('-password');
+    if (!targetUser) {
+      return res.status(200).json({
+        message: 'User profile not found in database',
+        user: null
+      });
+    }
+
+    const currentUserIdStr = req.user?._id ? req.user._id.toString() : '';
+    const currentUser = currentUserIdStr ? await User.findById(currentUserIdStr) : null;
+    const currentUserCoords = getUserCoordinates(currentUser);
+    const targetCoords = getUserCoordinates(targetUser);
+
+    let distanceText = '1 km away';
+    if (currentUserCoords && targetCoords) {
+      const kmVal = calculateHaversineDistance(
+        currentUserCoords.lat,
+        currentUserCoords.lng,
+        targetCoords.lat,
+        targetCoords.lng
+      );
+      const formatted = (Math.round(kmVal * 10) / 10).toString();
+      distanceText = `${formatted} km away`;
+    }
+
+    // Filter out media hidden by target user for logged-in viewer
+    const userHiddenMediaList = (targetUser.hiddenProfileMedia || [])
+      .filter(item => item && item.hiddenForUserId && item.hiddenForUserId.toString() === currentUserIdStr)
+      .map(item => item.mediaUrl);
+
+    const filterPublicMedia = (arr) => {
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(url => typeof url === 'string' && url.trim().length > 0 && !userHiddenMediaList.includes(url));
+    };
+
+    const publicProfileImages = filterPublicMedia(targetUser.profileImages);
+    const publicPhotos = filterPublicMedia(targetUser.photos);
+    const publicVideos = filterPublicMedia(targetUser.videos);
+    const publicMedia = filterPublicMedia(targetUser.media);
+
+    let safeProfileImage = targetUser.profileImage || '';
+    if (safeProfileImage && userHiddenMediaList.includes(safeProfileImage)) {
+      safeProfileImage = publicProfileImages[0] || publicPhotos[0] || publicMedia[0] || '';
+    }
+
+    // Calculate age
+    let computedAge = targetUser.age;
+    if (!computedAge && targetUser.bdayYear) {
+      const today = new Date();
+      const yr = parseInt(targetUser.bdayYear, 10);
+      const mo = parseInt(targetUser.bdayMonth, 10) || 1;
+      const dy = parseInt(targetUser.bdayDay, 10) || 1;
+      if (!isNaN(yr) && yr > 1900) {
+        let calc = today.getFullYear() - yr;
+        const monthDiff = (today.getMonth() + 1) - mo;
+        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dy)) {
+          calc--;
+        }
+        if (calc >= 18 && calc <= 120) computedAge = calc;
+      }
+    }
+
+    return res.status(200).json({
+      message: 'User profile fetched successfully',
+      user: {
+        id: targetUser._id,
+        _id: targetUser._id,
+        name: targetUser.firstName || targetUser.name || 'Anonymous',
+        firstName: targetUser.firstName || targetUser.name || 'Anonymous',
+        age: computedAge || 24,
+        bio: targetUser.bio || '',
+        distance: distanceText,
+        interests: targetUser.interests || [],
+        languages: targetUser.languages || [],
+        image: safeProfileImage,
+        profileImage: safeProfileImage,
+        profileImages: publicProfileImages,
+        photos: publicPhotos,
+        videos: publicVideos,
+        media: publicMedia,
+        gender: targetUser.gender || '',
+        orientation: targetUser.orientation || '',
+        lookingFor: targetUser.lookingFor || '',
+        drinkHabit: targetUser.drinkHabit || '',
+        smokeHabit: targetUser.smokeHabit || '',
+        exercise: targetUser.exercise || '',
+        pets: targetUser.pets || '',
+        educationLevel: targetUser.educationLevel || '',
+        zodiac: targetUser.zodiac || '',
+        height: targetUser.height || '',
+        weight: targetUser.weight || '',
+        job: targetUser.job || '',
+        college: targetUser.college || '',
+        isOnline: (targetUser.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has(targetUser._id.toString()) : false),
+        lastSeen: targetUser.lastSeen || targetUser.updatedAt || targetUser.createdAt,
+      }
+    });
+  } catch (error) {
+    console.error('Error in getUserById:', error);
+    return res.status(500).json({ message: 'Server error fetching user profile.' });
+  }
+};
+
+/**
  * Get other logged-in users (online users)
  */
 exports.getOnlineUsers = async (req, res) => {
@@ -752,33 +879,60 @@ exports.uploadImage = async (req, res) => {
 
     let imageUrl = null;
 
+    const ensureVideo15SecLimit = (url) => {
+      if (!url || typeof url !== 'string') return url;
+      const lower = url.toLowerCase();
+      const isVideo = lower.includes('/video/upload/') || lower.includes('/video/') || /\.(mp4|mov|webm|3gp|mkv|avi|m4v|flv)($|\?|#)/i.test(lower);
+      if (isVideo && url.includes('cloudinary.com') && url.includes('/video/upload/')) {
+        if (!url.includes('/so_0,eo_15/') && !url.includes('/eo_15/') && !url.includes('/du_15/')) {
+          return url.replace('/video/upload/', '/video/upload/so_0,eo_15/');
+        }
+      }
+      return url;
+    };
+
     // Helper to upload photos & videos to Cloudinary using Dating_Profiles preset
     const doCloudinaryUpload = async (inputData, mimetype = 'image/jpeg') => {
-      const isVideo = mimetype && (mimetype.startsWith('video/') || mimetype.endsWith('.mp4') || mimetype.endsWith('.mov'));
+      const isVideo = mimetype && (mimetype.startsWith('video/') || mimetype.endsWith('.mp4') || mimetype.endsWith('.mov') || isBackendVideoUrl(mimetype) || isBackendVideoUrl(inputData));
       const resType = isVideo ? 'video' : 'auto';
       const uploadOptions = {
         folder: 'dating_app_profiles',
         resource_type: resType,
       };
 
+      if (isVideo) {
+        uploadOptions.transformation = [
+          { start_offset: "0", end_offset: "15" }
+        ];
+      }
+
+      let resultUrl = null;
       try {
-        console.log(`Attempting Cloudinary unsigned_upload for ${isVideo ? 'video' : 'photo'}...`);
-        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', { resource_type: resType });
+        console.log(`Attempting Cloudinary unsigned_upload for ${isVideo ? 'video (trimmed to 15s)' : 'photo'}...`);
+        const unsignedOptions = isVideo
+          ? { resource_type: resType, transformation: [{ start_offset: "0", end_offset: "15" }] }
+          : { resource_type: resType };
+        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', unsignedOptions);
         if (cloudRes && cloudRes.secure_url) {
-          return cloudRes.secure_url;
+          resultUrl = cloudRes.secure_url;
         }
       } catch (err1) {
         console.warn('Cloudinary unsigned_upload failed, trying signed upload:', err1.message || err1);
         try {
           const cloudRes = await cloudinary.uploader.upload(inputData, uploadOptions);
           if (cloudRes && cloudRes.secure_url) {
-            return cloudRes.secure_url;
+            resultUrl = cloudRes.secure_url;
           }
         } catch (err2) {
           console.warn('Cloudinary signed upload failed:', err2.message || err2);
         }
       }
-      return null;
+
+      if (resultUrl && isVideo) {
+        resultUrl = ensureVideo15SecLimit(resultUrl);
+      }
+
+      return resultUrl;
     };
 
     const fileMime = file?.mimetype || 'image/jpeg';

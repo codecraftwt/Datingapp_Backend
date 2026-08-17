@@ -10,6 +10,7 @@ router.put('/location', auth, profileController.updateLocation);
 router.delete('/location', auth, profileController.clearCurrentLocation);
 router.get(['/questionnaire-options', '/questionnarie-options', '/options', '/questionnaire/options'], profileController.getQuestionnaireOptions);
 router.get('/questionnaire', auth, profileController.getQuestionnaires);
+router.get(['/user/:userId', '/profile/:userId', '/details/:userId', '/user-profile/:userId', '/:userId'], auth, profileController.getUserById);
 router.get(['/profile', '/'], auth, profileController.getProfile);
 router.get('/online-users', auth, profileController.getOnlineUsers);
 router.post(['/upload', '/uploads'], auth, upload.any(), (req, res, next) => {

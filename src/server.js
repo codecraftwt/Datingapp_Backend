@@ -156,6 +156,14 @@ io.on('connection', (socket) => {
     if (userId) {
       onlineUsers.set(userId.toString(), socket.id);
       console.log(`User ${userId} associated with socket ${socket.id}`);
+      
+      // Update DB isLoggedIn status
+      try {
+        await User.findByIdAndUpdate(userId, { isLoggedIn: true });
+      } catch (dbErr) {
+        console.error(`Failed to update isLoggedIn for user ${userId}:`, dbErr);
+      }
+
       // Broadcast online status to all clients
       io.emit('user_status', { userId: userId.toString(), status: 'online' });
 
@@ -184,6 +192,26 @@ io.on('connection', (socket) => {
         console.error('Error updating undelivered messages on socket join:', err);
       }
     }
+  });
+
+  // Handle explicitly checking online status of a partner user
+  socket.on('check_online_status', async ({ targetUserId }) => {
+    if (!targetUserId) return;
+    const isOnline = onlineUsers.has(targetUserId.toString());
+    let lastSeen = null;
+    if (!isOnline) {
+      try {
+        const targetUser = await User.findById(targetUserId).select('lastSeen isLoggedIn');
+        lastSeen = targetUser?.lastSeen ? targetUser.lastSeen.toISOString() : null;
+      } catch (err) {
+        console.error('Error fetching lastSeen for target user:', err);
+      }
+    }
+    socket.emit('online_status_response', {
+      targetUserId: targetUserId.toString(),
+      isOnline,
+      lastSeen,
+    });
   });
 
   // Handle sending one-to-one message
