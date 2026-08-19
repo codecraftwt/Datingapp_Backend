@@ -63,6 +63,8 @@ exports.advancedSearch = async (req, res) => {
     const body = { ...req.query, ...req.body };
 
     const {
+      searchKeyword,
+      query,
       ageMin,
       ageMax,
       distanceKm,
@@ -93,30 +95,37 @@ exports.advancedSearch = async (req, res) => {
       b.blockerId.toString() === req.user._id.toString() ? b.blockedId : b.blockerId
     );
 
-    // Build MongoDB Query
+    // Build MongoDB Query (Exclude current user and blocked profiles)
     const mongoQuery = {
       _id: { $ne: req.user._id, $nin: blockedIds },
-      firstName: { $exists: true, $ne: null },
     };
+
+    // Text Search (Name, Profession, College, Bio, Location)
+    const textQuery = (searchKeyword || query || profession || '').toString().trim();
+    if (textQuery && textQuery !== 'All') {
+      const regex = new RegExp(textQuery, 'i');
+      mongoQuery.$or = [
+        { firstName: regex },
+        { lastName: regex },
+        { name: regex },
+        { job: regex },
+        { college: regex },
+        { bio: regex },
+        { locationName: regex },
+        { city: regex },
+      ];
+    }
 
     // Gender Filter
     const targetGender = gender || currentUser.interestedIn;
-    if (targetGender) {
+    if (targetGender && targetGender !== 'Everyone' && targetGender !== 'All') {
       if (targetGender === 'Women' || targetGender === 'Female') {
         mongoQuery.gender = { $in: ['Women', 'Female', 'Woman'] };
       } else if (targetGender === 'Male' || targetGender === 'Men') {
         mongoQuery.gender = { $in: ['Male', 'Man', 'Men'] };
-      } else if (targetGender !== 'Everyone' && targetGender !== 'All') {
+      } else {
         mongoQuery.gender = targetGender;
       }
-    }
-
-    // Profession / Job regex search
-    if (profession && typeof profession === 'string' && profession.trim() !== '') {
-      mongoQuery.$or = [
-        { job: { $regex: profession.trim(), $options: 'i' } },
-        { college: { $regex: profession.trim(), $options: 'i' } },
-      ];
     }
 
     // Interests Filter

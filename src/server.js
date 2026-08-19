@@ -157,18 +157,20 @@ io.on('connection', (socket) => {
   // User joins and registers their userId
   socket.on('join', async (userId) => {
     if (userId) {
-      onlineUsers.set(userId.toString(), socket.id);
+      const uIdStr = userId.toString();
+      const now = new Date();
+      onlineUsers.set(uIdStr, socket.id);
       console.log(`User ${userId} associated with socket ${socket.id}`);
       
-      // Update DB isLoggedIn status
+      // Update DB isLoggedIn status & lastSeen
       try {
-        await User.findByIdAndUpdate(userId, { isLoggedIn: true });
+        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, lastSeen: now });
       } catch (dbErr) {
         console.error(`Failed to update isLoggedIn for user ${userId}:`, dbErr);
       }
 
       // Broadcast online status to all clients
-      io.emit('user_status', { userId: userId.toString(), status: 'online' });
+      io.emit('user_status', { userId: uIdStr, status: 'online' });
 
       // Send list of all currently online users to the newly joined user
       socket.emit('online_users_list', {
@@ -198,9 +200,14 @@ io.on('connection', (socket) => {
   });
 
   // Real-time presence ping handler
-  socket.on('ping_presence', (userId) => {
+  socket.on('ping_presence', async (userId) => {
     if (userId) {
-      onlineUsers.set(userId.toString(), socket.id);
+      const uIdStr = userId.toString();
+      const now = new Date();
+      onlineUsers.set(uIdStr, socket.id);
+      try {
+        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, lastSeen: now });
+      } catch (dbErr) {}
     }
   });
 
