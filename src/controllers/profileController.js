@@ -1483,6 +1483,9 @@ exports.getGalleryPreview = async (req, res) => {
  */
 exports.updateFcmToken = async (req, res) => {
   try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: User session expired or invalid.' });
+    }
     const { fcmToken } = req.body;
     if (!fcmToken) {
       return res.status(400).json({ success: false, message: 'FCM token is required' });
@@ -1499,5 +1502,72 @@ exports.updateFcmToken = async (req, res) => {
   } catch (error) {
     console.error('Error in updateFcmToken:', error);
     return res.status(500).json({ success: false, message: 'Server error updating FCM token.' });
+  }
+};
+
+/**
+ * POST /api/profile/test-fcm-push
+ * Diagnostic endpoint to test FCM push notification delivery
+ */
+exports.testFcmPush = async (req, res) => {
+  try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: User session expired or invalid.' });
+    }
+    const userId = req.user._id;
+    const user = await User.findById(userId).select('fcmToken name email');
+    if (!user || !user.fcmToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'No FCM token registered for your user account. Please open the app on a real phone and log in.',
+        user: { id: user?._id, name: user?.name, fcmToken: user?.fcmToken || null }
+      });
+    }
+
+    const { sendPushNotification } = require('../services/pushNotificationService');
+    const fcmResult = await sendPushNotification(userId, {
+      title: '🎉 Push Notification Test',
+      body: 'Your real-time Firebase Push Notifications are working perfectly!',
+      data: { type: 'test', timestamp: Date.now().toString() }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Push notification triggered to Firebase Cloud Messaging!',
+      fcmTokenUsed: user.fcmToken.substring(0, 30) + '...',
+      result: fcmResult || 'Dispatched'
+    });
+  } catch (error) {
+    console.error('testFcmPush error:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Error triggering test push notification.' });
+  }
+};
+
+/**
+ * GET /api/profile/fcm-token
+ * Check if the currently authenticated user has an active FCM token registered
+ */
+exports.getFcmToken = async (req, res) => {
+  try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: User session expired or invalid.' });
+    }
+    const user = await User.findById(req.user._id).select('firstName name email fcmToken isLoggedIn updatedAt');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+    return res.status(200).json({
+      success: true,
+      user: {
+        id: user._id,
+        name: user.firstName || user.name || user.email,
+        fcmToken: user.fcmToken || null,
+        hasFcmToken: !!(user.fcmToken && user.fcmToken.trim().length > 0),
+        lastSeen: user.updatedAt,
+      }
+    });
+  } catch (error) {
+    console.error('getFcmToken error:', error);
+    return res.status(500).json({ success: false, message: 'Server error checking FCM token.' });
   }
 };

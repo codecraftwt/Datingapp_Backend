@@ -22,6 +22,8 @@ router.post(['/upload', '/uploads'], auth, upload.any(), (req, res, next) => {
 router.post('/remove-photo', auth, profileController.removeProfilePhoto);
 router.post('/remove-profile', auth, profileController.removeProfile);
 router.put('/fcm-token', auth, profileController.updateFcmToken);
+router.get('/fcm-token', auth, profileController.getFcmToken);
+router.post('/test-fcm-push', auth, profileController.testFcmPush);
 
 router.put(['/hide-media', '/hide'], auth, profileController.hideProfileMedia);
 router.post(['/hide-media', '/hide'], auth, profileController.hideProfileMedia);

@@ -11,7 +11,11 @@ try {
   // 1. Check if provided via environment variable
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     try {
-      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      let rawEnv = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
+      if ((rawEnv.startsWith("'") && rawEnv.endsWith("'")) || (rawEnv.startsWith('"') && rawEnv.endsWith('"'))) {
+        rawEnv = rawEnv.slice(1, -1);
+      }
+      serviceAccount = typeof rawEnv === 'object' ? rawEnv : JSON.parse(rawEnv);
     } catch (e) {
       console.error('[FCM Push] Error parsing FIREBASE_SERVICE_ACCOUNT env var:', e.message);
     }
@@ -26,17 +30,20 @@ try {
 
   // 2. Check candidate service account key files on disk
   if (!serviceAccount) {
-    const candidatePaths = [
-      path.join(process.cwd(), 'dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json'),
-      path.join(process.cwd(), 'firebase-service-account.json'),
-      path.join(__dirname, '../dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json'),
-      path.join(__dirname, '../../dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json'),
-      path.join(__dirname, '../../firebase-service-account.json'),
-    ];
-    const serviceAccountPath = candidatePaths.find((p) => fs.existsSync(p));
-    if (serviceAccountPath) {
-      serviceAccount = require(serviceAccountPath);
-      console.log(`[FCM Push] Found Firebase JSON file: ${path.basename(serviceAccountPath)}`);
+    const searchDirs = [process.cwd(), path.join(__dirname, '..'), path.join(__dirname, '../..')];
+    for (const dir of searchDirs) {
+      if (fs.existsSync(dir)) {
+        try {
+          const files = fs.readdirSync(dir);
+          const jsonMatch = files.find((f) => f.toLowerCase().includes('firebase') && f.endsWith('.json'));
+          if (jsonMatch) {
+            const fullPath = path.join(dir, jsonMatch);
+            serviceAccount = require(fullPath);
+            console.log(`[FCM Push] Found Firebase JSON file: ${jsonMatch}`);
+            break;
+          }
+        } catch (e) {}
+      }
     }
   }
 
