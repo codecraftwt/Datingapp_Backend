@@ -4,9 +4,11 @@ const fs = require('fs');
 
 const os = require('os');
 
-let uploadDir = path.join(__dirname, '../../uploads');
+const isVercelServerless = !!(process.env.VERCEL || process.env.NOW_REGION || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NODE_ENV === 'production');
+let uploadDir = isVercelServerless ? os.tmpdir() : path.join(__dirname, '../../uploads');
+
 try {
-  if (!fs.existsSync(uploadDir)) {
+  if (!isVercelServerless && !fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
   }
 } catch (mkdirErr) {
@@ -21,7 +23,7 @@ try {
     fs.writeFileSync(sampleDocPath, '%PDF-1.4\n%dummy pdf content\nFlameMatch Dating App - Simulated PDF Document');
   }
 } catch (err) {
-  console.warn('Could not write dummy sample_document.pdf:', err.message);
+  // Ignore on read-only environments
 }
 
 try {
@@ -30,11 +32,15 @@ try {
     fs.writeFileSync(sampleVoicePath, 'dummy audio content - FlameMatch Dating App - Simulated MP3 Voice Note');
   }
 } catch (err) {
-  console.warn('Could not write dummy sample_voice.mp3:', err.message);
+  // Ignore on read-only environments
 }
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
+    // For Vercel Serverless, always target /tmp (os.tmpdir()) to prevent EROFS errors
+    if (isVercelServerless) {
+      return cb(null, os.tmpdir());
+    }
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
