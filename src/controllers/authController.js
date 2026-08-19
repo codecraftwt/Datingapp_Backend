@@ -163,6 +163,7 @@ exports.register = async (req, res) => {
       location: currentLocationObj?.location || permanentAddressObj.location,
       fcmToken: req.body.fcmToken || null,
       isLoggedIn: true,
+      lastSeen: new Date(),
     });
 
     await newUser.save();
@@ -246,7 +247,7 @@ exports.login = async (req, res) => {
 
     // Safely update user status, currentToken, and FCM token
     try {
-      const updateFields = { isLoggedIn: true, currentToken: token };
+      const updateFields = { isLoggedIn: true, lastSeen: new Date(), currentToken: token };
       if (fcmToken) {
         updateFields.fcmToken = fcmToken;
       }
