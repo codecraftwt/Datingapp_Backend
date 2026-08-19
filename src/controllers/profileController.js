@@ -1476,3 +1476,28 @@ exports.getGalleryPreview = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Server error fetching gallery preview.' });
   }
 };
+
+/**
+ * PUT /api/profile/fcm-token
+ * Updates user's FCM device push token in MongoDB
+ */
+exports.updateFcmToken = async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken) {
+      return res.status(400).json({ success: false, message: 'FCM token is required' });
+    }
+
+    const userId = req.user._id;
+    await User.findByIdAndUpdate(userId, { fcmToken });
+    console.log(`[FCM] Successfully updated FCM token for user ${userId}`);
+
+    return res.status(200).json({
+      success: true,
+      message: 'FCM token updated successfully',
+    });
+  } catch (error) {
+    console.error('Error in updateFcmToken:', error);
+    return res.status(500).json({ success: false, message: 'Server error updating FCM token.' });
+  }
+};
