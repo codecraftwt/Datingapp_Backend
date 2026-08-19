@@ -41,6 +41,9 @@ try {
   }
 
   if (serviceAccount) {
+    if (serviceAccount.private_key && typeof serviceAccount.private_key === 'string') {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
     const credential = (admin.credential && admin.credential.cert) ? admin.credential.cert(serviceAccount) : admin.cert(serviceAccount);
     if (!admin.apps || admin.apps.length === 0) {
       admin.initializeApp({ credential });
