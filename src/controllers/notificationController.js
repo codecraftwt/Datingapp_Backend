@@ -79,13 +79,16 @@ exports.markAsRead = async (req, res) => {
 };
 
 /**
- * Mark all 'like' notifications as read for logged in user
+ * Mark all 'like' and 'superlike' notifications as read for logged in user
  */
 exports.markLikesAsRead = async (req, res) => {
   try {
     const userId = req.user._id;
-    await Notification.updateMany({ recipient: userId, type: 'like', isRead: false }, { isRead: true });
-    return res.status(200).json({ message: 'Like notifications marked as read.' });
+    await Notification.updateMany(
+      { recipient: userId, type: { $in: ['like', 'superlike'] }, isRead: false },
+      { isRead: true }
+    );
+    return res.status(200).json({ message: 'Like and superlike notifications marked as read.' });
   } catch (error) {
     console.error('Mark likes read error:', error);
     return res.status(500).json({ message: 'Server error marking likes as read.' });

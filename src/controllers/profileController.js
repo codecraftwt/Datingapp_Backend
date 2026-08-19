@@ -624,7 +624,7 @@ exports.getQuestionnaires = async (req, res) => {
           weight: u.weight || '',
           job: u.job || '',
           college: u.college || '',
-          isOnline: (u.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has((u._id || u.id).toString()) : false),
+          isOnline: (u.isLoggedIn === true) || (global.onlineUsers ? global.onlineUsers.has((u._id || u.id).toString()) : false),
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
       })
@@ -804,7 +804,7 @@ exports.getUserById = async (req, res) => {
         weight: targetUser.weight || '',
         job: targetUser.job || '',
         college: targetUser.college || '',
-        isOnline: (targetUser.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has(targetUser._id.toString()) : false),
+        isOnline: (targetUser.isLoggedIn === true) || (global.onlineUsers ? global.onlineUsers.has(targetUser._id.toString()) : false),
         lastSeen: targetUser.lastSeen || targetUser.updatedAt || targetUser.createdAt,
       }
     });

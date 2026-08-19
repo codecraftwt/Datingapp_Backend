@@ -386,7 +386,8 @@ exports.sendMessage = async (req, res) => {
       title: notificationTitle,
       body: notificationText,
       data: {
-        type: messageType || 'chat',
+        type: 'chat',
+        messageType: messageType || 'text',
         senderId: senderId.toString(),
         messageId: newMessage._id.toString(),
         notificationId: newMessage._id.toString(),

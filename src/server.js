@@ -29,12 +29,15 @@ const PORT = process.env.PORT || 5000;
 // Create HTTP server
 const server = http.createServer(app);
 
-// Initialize Socket.IO
+// Initialize Socket.IO with mobile network ping configuration
 const io = new Server(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
   },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['websocket', 'polling'],
 });
 
 app.set('io', io);
@@ -194,21 +197,51 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle explicitly checking online status of a partner user
+  // Real-time presence ping handler
+  socket.on('ping_presence', (userId) => {
+    if (userId) {
+      onlineUsers.set(userId.toString(), socket.id);
+    }
+  });
+
+  // Real-time explicit offline handler (app minimized/backgrounded or logged out)
+  socket.on('going_offline', async (userId) => {
+    if (userId) {
+      const uIdStr = userId.toString();
+      onlineUsers.delete(uIdStr);
+      const lastSeenDate = new Date();
+      try {
+        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: false, lastSeen: lastSeenDate });
+      } catch (dbErr) {}
+
+      io.emit('user_status', {
+        userId: uIdStr,
+        status: 'offline',
+        lastSeen: lastSeenDate.toISOString(),
+      });
+    }
+  });
+
+  // Handle explicitly checking online status of a partner user (strictly onlineUsers socket presence)
   socket.on('check_online_status', async ({ targetUserId }) => {
     if (!targetUserId) return;
-    const isOnline = onlineUsers.has(targetUserId.toString());
+    const targetIdStr = targetUserId.toString();
+    const isOnline = onlineUsers.has(targetIdStr);
     let lastSeen = null;
+
     if (!isOnline) {
       try {
-        const targetUser = await User.findById(targetUserId).select('lastSeen isLoggedIn');
-        lastSeen = targetUser?.lastSeen ? targetUser.lastSeen.toISOString() : null;
+        const targetUser = await User.findById(targetUserId).select('lastSeen');
+        if (targetUser && targetUser.lastSeen) {
+          lastSeen = targetUser.lastSeen.toISOString();
+        }
       } catch (err) {
         console.error('Error fetching lastSeen for target user:', err);
       }
     }
+
     socket.emit('online_status_response', {
-      targetUserId: targetUserId.toString(),
+      targetUserId: targetIdStr,
       isOnline,
       lastSeen,
     });
@@ -294,7 +327,8 @@ io.on('connection', (socket) => {
         title: notificationTitle,
         body: notificationText,
         data: {
-          type: messageType || 'chat',
+          type: 'chat',
+          messageType: messageType || 'text',
           senderId: senderId.toString(),
           messageId: newMessage._id.toString(),
           notificationId: newMessage._id.toString(),

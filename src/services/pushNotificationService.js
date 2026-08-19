@@ -27,6 +27,9 @@ try {
   // 2. Check candidate service account key files on disk
   if (!serviceAccount) {
     const candidatePaths = [
+      path.join(process.cwd(), 'dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json'),
+      path.join(process.cwd(), 'firebase-service-account.json'),
+      path.join(__dirname, '../dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json'),
       path.join(__dirname, '../../dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json'),
       path.join(__dirname, '../../firebase-service-account.json'),
     ];
@@ -64,7 +67,8 @@ const sendPushNotification = async (targetUserId, { title, body, data = {} }) =>
 
     // 1. Save Notification record to MongoDB (works even if user is logged out)
     const senderId = data.senderId || data.userId;
-    const notificationType = data.type || 'like';
+    const validTypes = ['like', 'match', 'chat', 'superlike'];
+    const notificationType = validTypes.includes(data.type) ? data.type : 'chat';
 
     let notificationId = null;
     if (senderId) {
@@ -103,11 +107,17 @@ const sendPushNotification = async (targetUserId, { title, body, data = {} }) =>
       return;
     }
 
-    const payloadData = {
-      ...data,
-      notificationId: notificationId || Date.now().toString(),
-      click_action: 'FLUTTER_NOTIFICATION_CLICK',
-    };
+    // Ensure all entries in data payload are non-null string key-value pairs for FCM
+    const payloadData = {};
+    if (data && typeof data === 'object') {
+      for (const [k, v] of Object.entries(data)) {
+        if (v !== undefined && v !== null) {
+          payloadData[k] = v.toString();
+        }
+      }
+    }
+    payloadData.notificationId = (notificationId || Date.now()).toString();
+    payloadData.click_action = 'FLUTTER_NOTIFICATION_CLICK';
 
     const message = {
       token: user.fcmToken,

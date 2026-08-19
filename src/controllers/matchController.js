@@ -478,7 +478,7 @@ exports.getMatches = async (req, res) => {
           weight: u.weight || '',
           job: u.job || '',
           college: u.college || '',
-          isOnline: (u.isLoggedIn === true) && (global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false),
+          isOnline: (u.isLoggedIn === true) || (global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false),
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
       })
