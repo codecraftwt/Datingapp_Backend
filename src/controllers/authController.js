@@ -288,6 +288,7 @@ exports.login = async (req, res) => {
         profileImage: user.profileImage,
         profileImages: user.profileImages || [],
         bio: user.bio || '',
+        fcmToken: user.fcmToken || null,
       },
     });
   } catch (error) {
