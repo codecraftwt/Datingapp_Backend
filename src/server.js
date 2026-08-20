@@ -117,6 +117,7 @@ const matchRoutes = require('./routes/matchRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const searchRoutes = require('./routes/searchRoutes');
 const questionnaireRoutes = require('./routes/questionnaireRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use(['/api/profile', '/api/profil'], profileRoutes);
@@ -127,6 +128,7 @@ app.use('/api/match', matchRoutes);
 app.use('/api/user', matchRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/search', searchRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Health Check Routes
 app.get(['/', '/health', '/api/health'], (req, res) => {

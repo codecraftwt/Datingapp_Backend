@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Match = require('../models/Match');
 const Message = require('../models/Message');
 const Block = require('../models/Block');
+const Report = require('../models/Report');
 const fs = require('fs');
 const path = require('path');
 const cloudinary = require('cloudinary').v2;
@@ -1573,5 +1574,57 @@ exports.getFcmToken = async (req, res) => {
   } catch (error) {
     console.error('getFcmToken error:', error);
     return res.status(500).json({ success: false, message: 'Server error checking FCM token.' });
+  }
+};
+
+/**
+ * GET /api/profile/my-reports
+ * Fetch all reports filed by the logged-in user with reported user details
+ */
+exports.getMyReports = async (req, res) => {
+  try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Unauthorized session.' });
+    }
+
+    const reports = await Report.find({ reporterId: req.user._id })
+      .populate('reportedId', 'name firstName email age gender profileImage profileImages photos')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const formattedReports = reports.map((rep) => {
+      const reportedUser = rep.reportedId || {};
+      const profileImage =
+        reportedUser.profileImage ||
+        (Array.isArray(reportedUser.profileImages) ? reportedUser.profileImages[0] : null) ||
+        (Array.isArray(reportedUser.photos) ? reportedUser.photos[0] : null);
+
+      return {
+        _id: rep._id,
+        reason: rep.reason,
+        details: rep.details,
+        status: rep.status || 'pending',
+        createdAt: rep.createdAt,
+        updatedAt: rep.updatedAt,
+        reportedUser: {
+          _id: reportedUser._id || null,
+          name: reportedUser.name || reportedUser.firstName || 'User',
+          firstName: reportedUser.firstName || reportedUser.name || 'User',
+          email: reportedUser.email || '',
+          age: reportedUser.age || null,
+          gender: reportedUser.gender || '',
+          profileImage: profileImage || null,
+        },
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: formattedReports.length,
+      reports: formattedReports,
+    });
+  } catch (error) {
+    console.error('getMyReports error:', error);
+    return res.status(500).json({ success: false, message: 'Server error fetching user reports.' });
   }
 };
