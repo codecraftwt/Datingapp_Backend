@@ -247,11 +247,13 @@ exports.login = async (req, res) => {
 
     // Safely update user status, currentToken, and FCM token
     try {
+      console.log(`[BACKEND AUTH] Login payload for ${user.email} - fcmToken:`, fcmToken ? (fcmToken.substring(0, 25) + '...') : 'NONE / UNDEFINED');
       const updateFields = { isLoggedIn: true, lastSeen: new Date(), currentToken: token };
       if (fcmToken) {
         updateFields.fcmToken = fcmToken;
       }
-      await User.findByIdAndUpdate(user._id, { $set: updateFields });
+      const updatedUser = await User.findByIdAndUpdate(user._id, { $set: updateFields }, { new: true });
+      console.log(`[BACKEND AUTH] MongoDB updated fcmToken for user ${user._id}:`, updatedUser?.fcmToken ? 'SAVED SUCCESS' : 'NULL');
     } catch (updateErr) {
       console.warn('[AUTH CONTROLLER] Non-fatal user status update error during login:', updateErr.message);
     }

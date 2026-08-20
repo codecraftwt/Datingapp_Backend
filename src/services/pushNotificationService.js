@@ -1,4 +1,5 @@
 const admin = require('firebase-admin');
+const { getMessaging } = require('firebase-admin/messaging');
 const path = require('path');
 const fs = require('fs');
 const User = require('../models/User');
@@ -148,7 +149,7 @@ const sendPushNotification = async (targetUserId, { title, body, data = {} }) =>
       },
     };
 
-    const response = await admin.messaging().send(message);
+    const response = await getMessaging().send(message);
     console.log(`[FCM Push] Notification sent successfully to user ${user.name || targetUserId} (Msg ID: ${response})`);
     return response;
   } catch (error) {

@@ -5,7 +5,11 @@
 .env.*
 !.env.example
 firebase-service-account.json
+*firebase*.json
 *firebase-adminsdk*.json
+dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d (1).json
+dating-app-51de6-firebase-adminsdk-fbsvc-bd8a9eaa4d.json
+dating-app-51de6-firebase-adminsdk*.json
 google-services.json
 GoogleService-Info.plist
 *.pem

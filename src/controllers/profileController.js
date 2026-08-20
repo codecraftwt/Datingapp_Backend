@@ -1112,15 +1112,19 @@ exports.removeProfile = async (req, res) => {
 exports.updateFcmToken = async (req, res) => {
   try {
     const { fcmToken } = req.body;
+    console.log(`[BACKEND FCM] PUT /api/profile/fcm-token requested by User ID: ${req.user?._id || req.user?.id}`);
+    console.log(`[BACKEND FCM] Received fcmToken:`, fcmToken ? (fcmToken.substring(0, 30) + '...') : 'NULL / MISSING');
+
     if (!fcmToken) {
+      console.warn(`[BACKEND FCM] ⚠️ Rejected: fcmToken was empty or missing in request body.`);
       return res.status(400).json({ message: 'FCM Token is required.' });
     }
 
-    await User.findByIdAndUpdate(req.user._id, { fcmToken });
-    console.log(`[FCM Token] Updated FCM token for user ${req.user._id}`);
-    return res.status(200).json({ message: 'FCM Token updated successfully.' });
+    const updatedUser = await User.findByIdAndUpdate(req.user._id, { fcmToken }, { new: true });
+    console.log(`[BACKEND FCM] ✅ SUCCESS: FCM Token saved in MongoDB for user ${req.user._id} (${updatedUser?.email || ''})`);
+    return res.status(200).json({ message: 'FCM Token updated successfully.', saved: true });
   } catch (error) {
-    console.error('Update FCM Token error:', error);
+    console.error('[BACKEND FCM] ❌ Error updating FCM Token:', error);
     return res.status(500).json({ message: 'Server error while updating FCM Token.' });
   }
 };
