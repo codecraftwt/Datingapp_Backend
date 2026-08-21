@@ -49,7 +49,22 @@ exports.getChatMessages = async (req, res) => {
     Message.updateMany(
       { senderId: selectedUserId, receiverId: currentUserId, status: { $ne: 'seen' } },
       { status: 'seen' }
-    ).catch(() => {});
+    ).then((resUpdate) => {
+      if (resUpdate && resUpdate.modifiedCount > 0) {
+        const io = req.app.get('io');
+        if (io) {
+          const payload = {
+            senderId: selectedUserId.toString(),
+            receiverId: currentUserId.toString(),
+            status: 'seen',
+          };
+          io.to(selectedUserId.toString()).emit('messages_seen', payload);
+          const onlineUsers = global.onlineUsers || new Map();
+          const senderSocketId = onlineUsers.get(selectedUserId.toString());
+          if (senderSocketId) io.to(senderSocketId).emit('messages_seen', payload);
+        }
+      }
+    }).catch(() => {});
 
     const messages = await Message.find({
       $or: [
@@ -321,8 +336,11 @@ exports.sendMessage = async (req, res) => {
     }
 
     const onlineUsers = global.onlineUsers || new Map();
-    const receiverSocketId = onlineUsers.get(receiverId.toString());
-    const initialStatus = receiverSocketId ? 'delivered' : 'sent';
+    const rIdStr = receiverId.toString();
+    const sIdStr = senderId.toString();
+    const io = req.app.get('io');
+    const isReceiverOnline = onlineUsers.has(rIdStr) || (io && io.sockets.adapter.rooms.has(rIdStr) && io.sockets.adapter.rooms.get(rIdStr).size > 0);
+    const initialStatus = isReceiverOnline ? 'delivered' : 'sent';
 
     const newMessage = new Message({
       senderId,
@@ -339,8 +357,8 @@ exports.sendMessage = async (req, res) => {
 
     const msgData = {
       _id: newMessage._id,
-      senderId: senderId.toString(),
-      receiverId: receiverId.toString(),
+      senderId: sIdStr,
+      receiverId: rIdStr,
       text: newMessage.text,
       messageType: newMessage.messageType,
       mediaUrl: newMessage.mediaUrl,
@@ -352,9 +370,20 @@ exports.sendMessage = async (req, res) => {
       tempId: tempId || null,
     };
 
-    const io = req.app.get('io');
-    if (io && receiverSocketId) {
-      io.to(receiverSocketId).emit('receive_message', msgData);
+    if (io) {
+      io.to(rIdStr).emit('receive_message', msgData);
+      const receiverSocketId = onlineUsers.get(rIdStr);
+      if (receiverSocketId) io.to(receiverSocketId).emit('receive_message', msgData);
+
+      io.to(sIdStr).emit('message_sent', msgData);
+      const senderSocketId = onlineUsers.get(sIdStr);
+      if (senderSocketId) io.to(senderSocketId).emit('message_sent', msgData);
+
+      if (isReceiverOnline) {
+        const deliveryPayload = { messageId: newMessage._id.toString(), tempId: tempId || null, receiverId: rIdStr, status: 'delivered' };
+        io.to(sIdStr).emit('message_delivered', deliveryPayload);
+        if (senderSocketId) io.to(senderSocketId).emit('message_delivered', deliveryPayload);
+      }
     }
 
     // Trigger FCM Push Notification

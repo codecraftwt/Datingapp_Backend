@@ -162,7 +162,8 @@ io.on('connection', (socket) => {
       const uIdStr = userId.toString();
       const now = new Date();
       onlineUsers.set(uIdStr, socket.id);
-      console.log(`User ${userId} associated with socket ${socket.id}`);
+      socket.join(uIdStr);
+      console.log(`User ${userId} associated with socket ${socket.id} and joined room ${uIdStr}`);
       
       // Update DB isLoggedIn status & lastSeen
       try {
@@ -185,13 +186,16 @@ io.on('connection', (socket) => {
         if (undeliveredMsgs.length > 0) {
           await Message.updateMany({ receiverId: userId, status: 'sent' }, { status: 'delivered' });
           undeliveredMsgs.forEach((msg) => {
-            const senderSocketId = onlineUsers.get(msg.senderId.toString());
-            if (senderSocketId) {
-              io.to(senderSocketId).emit('message_delivered', {
-                messageId: msg._id.toString(),
-                receiverId: userId.toString(),
-                status: 'delivered',
-              });
+            const senderIdStr = msg.senderId.toString();
+            const deliveryPayload = {
+              messageId: msg._id.toString(),
+              receiverId: userId.toString(),
+              status: 'delivered',
+            };
+            io.to(senderIdStr).emit('message_delivered', deliveryPayload);
+            const senderSocketId = onlineUsers.get(senderIdStr);
+            if (senderSocketId && senderSocketId !== socket.id) {
+              io.to(senderSocketId).emit('message_delivered', deliveryPayload);
             }
           });
         }
@@ -206,7 +210,12 @@ io.on('connection', (socket) => {
     if (userId) {
       const uIdStr = userId.toString();
       const now = new Date();
+      const wasOnline = onlineUsers.has(uIdStr);
       onlineUsers.set(uIdStr, socket.id);
+      socket.join(uIdStr);
+      if (!wasOnline) {
+        io.emit('user_status', { userId: uIdStr, status: 'online' });
+      }
       try {
         await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, lastSeen: now });
       } catch (dbErr) {}
@@ -231,27 +240,30 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle explicitly checking online status of a partner user (strictly onlineUsers socket presence)
+  // Handle explicitly checking online status of a partner user
   socket.on('check_online_status', async ({ targetUserId }) => {
     if (!targetUserId) return;
     const targetIdStr = targetUserId.toString();
-    const isOnline = onlineUsers.has(targetIdStr);
+    let isOnline = onlineUsers.has(targetIdStr) || (io.sockets.adapter.rooms.has(targetIdStr) && io.sockets.adapter.rooms.get(targetIdStr).size > 0);
     let lastSeen = null;
 
-    if (!isOnline) {
-      try {
-        const targetUser = await User.findById(targetUserId).select('lastSeen');
-        if (targetUser && targetUser.lastSeen) {
+    try {
+      const targetUser = await User.findById(targetUserId).select('isLoggedIn lastSeen');
+      if (targetUser) {
+        if (!isOnline && targetUser.isLoggedIn) {
+          isOnline = true;
+        }
+        if (targetUser.lastSeen) {
           lastSeen = targetUser.lastSeen.toISOString();
         }
-      } catch (err) {
-        console.error('Error fetching lastSeen for target user:', err);
       }
+    } catch (err) {
+      console.error('Error fetching lastSeen for target user:', err);
     }
 
     socket.emit('online_status_response', {
       targetUserId: targetIdStr,
-      isOnline,
+      isOnline: !!isOnline,
       lastSeen,
     });
   });
@@ -262,8 +274,11 @@ io.on('connection', (socket) => {
       if (!senderId || !receiverId) return;
       if (!text && !mediaUrl && !stickerId) return;
 
-      const receiverSocketId = onlineUsers.get(receiverId.toString());
-      const initialStatus = receiverSocketId ? 'delivered' : 'sent';
+      const sIdStr = senderId.toString();
+      const rIdStr = receiverId.toString();
+
+      const isReceiverOnline = onlineUsers.has(rIdStr) || (io.sockets.adapter.rooms.has(rIdStr) && io.sockets.adapter.rooms.get(rIdStr).size > 0);
+      const initialStatus = isReceiverOnline ? 'delivered' : 'sent';
 
       const newMessage = new Message({
         senderId,
@@ -283,8 +298,8 @@ io.on('connection', (socket) => {
 
       const msgData = {
         _id: newMessage._id,
-        senderId: senderId.toString(),
-        receiverId: receiverId.toString(),
+        senderId: sIdStr,
+        receiverId: rIdStr,
         senderName,
         text: newMessage.text,
         messageType: newMessage.messageType,
@@ -297,17 +312,24 @@ io.on('connection', (socket) => {
         tempId: tempId || null
       };
 
-      // Emit to receiver if online
+      // Emit to receiver room & socket ID
+      io.to(rIdStr).emit('receive_message', msgData);
+      const receiverSocketId = onlineUsers.get(rIdStr);
       if (receiverSocketId) {
         io.to(receiverSocketId).emit('receive_message', msgData);
+      }
+
+      if (isReceiverOnline) {
         console.log(`Socket: Message sent and delivered from ${senderId} to online receiver ${receiverId}`);
-        // Notify sender that it has been delivered
-        socket.emit('message_delivered', { messageId: newMessage._id.toString(), tempId: tempId || null, receiverId: receiverId.toString(), status: 'delivered' });
+        const deliveryPayload = { messageId: newMessage._id.toString(), tempId: tempId || null, receiverId: rIdStr, status: 'delivered' };
+        io.to(sIdStr).emit('message_delivered', deliveryPayload);
+        socket.emit('message_delivered', deliveryPayload);
       } else {
         console.log(`Socket: Message sent as pending from ${senderId} to offline receiver ${receiverId}`);
       }
 
-      // Confirm send back to sender
+      // Confirm send back to sender room & socket
+      io.to(sIdStr).emit('message_sent', msgData);
       socket.emit('message_sent', msgData);
 
       // Trigger FCM Push Notification for Receiver
@@ -338,7 +360,7 @@ io.on('connection', (socket) => {
         data: {
           type: 'chat',
           messageType: messageType || 'text',
-          senderId: senderId.toString(),
+          senderId: sIdStr,
           messageId: newMessage._id.toString(),
           notificationId: newMessage._id.toString(),
         }
@@ -352,6 +374,9 @@ io.on('connection', (socket) => {
   socket.on('mark_seen', async ({ senderId, receiverId }) => {
     try {
       if (!senderId || !receiverId) return;
+
+      const sIdStr = senderId.toString();
+      const rIdStr = receiverId.toString();
 
       const result = await Message.updateMany(
         {
@@ -372,14 +397,16 @@ io.on('connection', (socket) => {
         { isRead: true }
       );
 
-      // If sender is online, notify them in real-time that their messages were seen
-      const senderSocketId = onlineUsers.get(senderId.toString());
+      // Notify sender in real-time (both via room and socket ID) that their messages were seen
+      const seenPayload = {
+        senderId: sIdStr,
+        receiverId: rIdStr,
+        status: 'seen',
+      };
+      io.to(sIdStr).emit('messages_seen', seenPayload);
+      const senderSocketId = onlineUsers.get(sIdStr);
       if (senderSocketId) {
-        io.to(senderSocketId).emit('messages_seen', {
-          senderId: senderId.toString(),
-          receiverId: receiverId.toString(),
-          status: 'seen',
-        });
+        io.to(senderSocketId).emit('messages_seen', seenPayload);
       }
     } catch (err) {
       console.error('Error handling mark_seen socket event:', err);
@@ -389,20 +416,24 @@ io.on('connection', (socket) => {
   // Handle typing status
   socket.on('typing', ({ senderId, receiverId }) => {
     if (!senderId || !receiverId) return;
-    const receiverSocketId = onlineUsers.get(receiverId.toString());
+    const rIdStr = receiverId.toString();
+    const payload = { senderId: senderId.toString() };
+    io.to(rIdStr).emit('user_typing', payload);
+    const receiverSocketId = onlineUsers.get(rIdStr);
     if (receiverSocketId) {
-      io.to(receiverSocketId).emit('user_typing', { senderId: senderId.toString() });
-      console.log(`Socket: User ${senderId} is typing to User ${receiverId}`);
+      io.to(receiverSocketId).emit('user_typing', payload);
     }
   });
 
   // Handle stop typing status
   socket.on('stop_typing', ({ senderId, receiverId }) => {
     if (!senderId || !receiverId) return;
-    const receiverSocketId = onlineUsers.get(receiverId.toString());
+    const rIdStr = receiverId.toString();
+    const payload = { senderId: senderId.toString() };
+    io.to(rIdStr).emit('user_stop_typing', payload);
+    const receiverSocketId = onlineUsers.get(rIdStr);
     if (receiverSocketId) {
-      io.to(receiverSocketId).emit('user_stop_typing', { senderId: senderId.toString() });
-      console.log(`Socket: User ${senderId} stopped typing to User ${receiverId}`);
+      io.to(receiverSocketId).emit('user_stop_typing', payload);
     }
   });
 
@@ -411,24 +442,28 @@ io.on('connection', (socket) => {
   // Handle calling a user
   socket.on('make_call', async ({ callerId, callerName, callerImage, receiverId, offer }) => {
     if (!callerId || !receiverId) return;
-    const receiverSocketId = onlineUsers.get(receiverId.toString());
+    const rIdStr = receiverId.toString();
+    const receiverSocketId = onlineUsers.get(rIdStr);
+    const isReceiverOnline = onlineUsers.has(rIdStr) || (io.sockets.adapter.rooms.has(rIdStr) && io.sockets.adapter.rooms.get(rIdStr).size > 0);
 
-    if (receiverSocketId) {
-      io.to(receiverSocketId).emit('incoming_call', {
+    if (isReceiverOnline) {
+      const callData = {
         callerId: callerId.toString(),
         callerName,
         callerImage,
         offer
-      });
+      };
+      io.to(rIdStr).emit('incoming_call', callData);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit('incoming_call', callData);
+      }
       socket.emit('call_ringing', { status: 'ringing', isOnline: true });
       console.log(`Socket: Voice call offer forwarded from ${callerId} to receiver ${receiverId}`);
     } else {
       console.log(`Socket: Receiver ${receiverId} is offline for call from ${callerId}. Ringing caller & sending FCM push notification.`);
 
-      // Emit ringing status to caller so caller's screen stays on Ringing...
       socket.emit('call_ringing', { status: 'ringing', isOnline: false });
 
-      // 1. Save missed call message to DB so it shows in chat history
       try {
         const missedCallMsg = new Message({
           senderId: callerId,
@@ -451,11 +486,11 @@ io.on('connection', (socket) => {
           createdAt: missedCallMsg.createdAt
         };
         socket.emit('message_sent', msgData);
+        io.to(callerId.toString()).emit('message_sent', msgData);
       } catch (dbErr) {
         console.error('Error saving missed call message:', dbErr);
       }
 
-      // 2. Send high priority FCM Push Notification & DB Notification to offline receiver
       sendPushNotification(receiverId, {
         title: '📞 Incoming Voice Call',
         body: `${callerName || 'Someone'} is calling you...`,
@@ -472,54 +507,53 @@ io.on('connection', (socket) => {
   // Handle call acceptance
   socket.on('accept_call', ({ callerId, receiverId, answer }) => {
     if (!callerId || !receiverId) return;
-    const callerSocketId = onlineUsers.get(callerId.toString());
+    const cIdStr = callerId.toString();
+    const payload = { receiverId: receiverId.toString(), answer };
+    io.to(cIdStr).emit('call_accepted', payload);
+    const callerSocketId = onlineUsers.get(cIdStr);
     if (callerSocketId) {
-      io.to(callerSocketId).emit('call_accepted', {
-        receiverId: receiverId.toString(),
-        answer
-      });
-      console.log(`Socket: Call accepted by ${receiverId} for caller ${callerId}`);
+      io.to(callerSocketId).emit('call_accepted', payload);
     }
   });
 
   // Handle call rejection
   socket.on('reject_call', ({ callerId, receiverId }) => {
     if (!callerId || !receiverId) return;
-    const callerSocketId = onlineUsers.get(callerId.toString());
+    const cIdStr = callerId.toString();
+    const payload = { receiverId: receiverId.toString() };
+    io.to(cIdStr).emit('call_rejected', payload);
+    const callerSocketId = onlineUsers.get(cIdStr);
     if (callerSocketId) {
-      io.to(callerSocketId).emit('call_rejected', {
-        receiverId: receiverId.toString()
-      });
-      console.log(`Socket: Call rejected by ${receiverId} for caller ${callerId}`);
+      io.to(callerSocketId).emit('call_rejected', payload);
     }
   });
 
   // Handle ending/cancelling call
   socket.on('end_call', ({ callerId, receiverId }) => {
     if (!callerId || !receiverId) return;
-    const receiverSocketId = onlineUsers.get(receiverId.toString());
-    const callerSocketId = onlineUsers.get(callerId.toString());
+    const rIdStr = receiverId.toString();
+    const cIdStr = callerId.toString();
     
-    if (receiverSocketId) {
-      io.to(receiverSocketId).emit('call_ended', { by: callerId.toString() });
-    }
-    if (callerSocketId) {
-      io.to(callerSocketId).emit('call_ended', { by: receiverId.toString() });
-    }
-    console.log(`Socket: Call ended between ${callerId} and ${receiverId}`);
+    io.to(rIdStr).emit('call_ended', { by: cIdStr });
+    io.to(cIdStr).emit('call_ended', { by: rIdStr });
+
+    const receiverSocketId = onlineUsers.get(rIdStr);
+    const callerSocketId = onlineUsers.get(cIdStr);
+    if (receiverSocketId) io.to(receiverSocketId).emit('call_ended', { by: cIdStr });
+    if (callerSocketId) io.to(callerSocketId).emit('call_ended', { by: rIdStr });
   });
 
   // Handle ICE candidates exchange
   socket.on('webrtc_ice_candidate', ({ senderId, receiverId, candidate }) => {
     if (!senderId || !receiverId) return;
-    const receiverSocketId = onlineUsers.get(receiverId.toString());
+    const rIdStr = receiverId.toString();
+    const payload = { senderId: senderId.toString(), candidate };
+    io.to(rIdStr).emit('webrtc_ice_candidate', payload);
+    const receiverSocketId = onlineUsers.get(rIdStr);
     if (receiverSocketId) {
-      io.to(receiverSocketId).emit('webrtc_ice_candidate', {
-        senderId: senderId.toString(),
-        candidate
-      });
-      console.log(`Socket: WebRTC ICE candidate forwarded from ${senderId} to ${receiverId}`);
+      io.to(receiverSocketId).emit('webrtc_ice_candidate', payload);
     }
+    console.log(`Socket: WebRTC ICE candidate forwarded from ${senderId} to ${receiverId}`);
   });
 
   socket.on('disconnect', async () => {
