@@ -221,7 +221,7 @@ exports.getAllRegisteredUsers = async (req, res) => {
     const sortObj = { [sortBy]: sortOrder };
 
     const totalUsersCount = await User.countDocuments({});
-    const onlineUsersCount = await User.countDocuments({ isLoggedIn: true });
+    const onlineUsersCount = global.onlineUsers ? global.onlineUsers.size : 0;
     const menCount = await User.countDocuments({ gender: /^men$/i });
     const womenCount = await User.countDocuments({ gender: /^women$/i });
 
@@ -236,8 +236,18 @@ exports.getAllRegisteredUsers = async (req, res) => {
       query = query.skip((pageNum - 1) * limitNum).limit(limitNum);
     }
 
-    const users = await query.lean();
+    const rawUsers = await query.lean();
     const filteredCount = await User.countDocuments(filter);
+
+    const users = rawUsers.map((u) => {
+      const uIdStr = (u._id || u.id)?.toString();
+      const isOnline = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
+      return {
+        ...u,
+        isOnline,
+        isLoggedIn: isOnline,
+      };
+    });
 
     return res.status(200).json({
       success: true,

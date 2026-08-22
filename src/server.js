@@ -35,8 +35,8 @@ const io = new Server(server, {
     origin: '*',
     methods: ['GET', 'POST'],
   },
-  pingTimeout: 60000,
-  pingInterval: 25000,
+  pingTimeout: 10000,
+  pingInterval: 10000,
   transports: ['websocket', 'polling'],
 });
 
@@ -160,6 +160,7 @@ io.on('connection', (socket) => {
   socket.on('join', async (userId) => {
     if (userId) {
       const uIdStr = userId.toString();
+      socket.userId = uIdStr;
       const now = new Date();
       onlineUsers.set(uIdStr, socket.id);
       socket.join(uIdStr);
@@ -209,6 +210,7 @@ io.on('connection', (socket) => {
   socket.on('ping_presence', async (userId) => {
     if (userId) {
       const uIdStr = userId.toString();
+      socket.userId = uIdStr;
       const now = new Date();
       const wasOnline = onlineUsers.has(uIdStr);
       onlineUsers.set(uIdStr, socket.id);
@@ -224,8 +226,9 @@ io.on('connection', (socket) => {
 
   // Real-time explicit offline handler (app minimized/backgrounded or logged out)
   socket.on('going_offline', async (userId) => {
-    if (userId) {
-      const uIdStr = userId.toString();
+    const uIdStr = (userId || socket.userId)?.toString();
+    if (uIdStr) {
+      console.log(`User ${uIdStr} going offline (app minimized/backgrounded)`);
       onlineUsers.delete(uIdStr);
       const lastSeenDate = new Date();
       try {
@@ -244,18 +247,13 @@ io.on('connection', (socket) => {
   socket.on('check_online_status', async ({ targetUserId }) => {
     if (!targetUserId) return;
     const targetIdStr = targetUserId.toString();
-    let isOnline = onlineUsers.has(targetIdStr) || (io.sockets.adapter.rooms.has(targetIdStr) && io.sockets.adapter.rooms.get(targetIdStr).size > 0);
+    const isOnline = onlineUsers.has(targetIdStr) || (io.sockets.adapter.rooms.has(targetIdStr) && io.sockets.adapter.rooms.get(targetIdStr).size > 0);
     let lastSeen = null;
 
     try {
-      const targetUser = await User.findById(targetUserId).select('isLoggedIn lastSeen');
-      if (targetUser) {
-        if (!isOnline && targetUser.isLoggedIn) {
-          isOnline = true;
-        }
-        if (targetUser.lastSeen) {
-          lastSeen = targetUser.lastSeen.toISOString();
-        }
+      const targetUser = await User.findById(targetUserId).select('lastSeen');
+      if (targetUser && targetUser.lastSeen) {
+        lastSeen = targetUser.lastSeen.toISOString();
       }
     } catch (err) {
       console.error('Error fetching lastSeen for target user:', err);
@@ -557,27 +555,34 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', async () => {
-    // Remove user association from onlineUsers Map
-    for (const [userId, socketId] of onlineUsers.entries()) {
-      if (socketId === socket.id) {
-        onlineUsers.delete(userId);
-        console.log(`User ${userId} went offline (socket disconnected)`);
-
-        const lastSeenDate = new Date();
-        try {
-          await User.findByIdAndUpdate(userId, { isLoggedIn: false, lastSeen: lastSeenDate });
-        } catch (dbErr) {
-          console.error(`Failed to update lastSeen for user ${userId}:`, dbErr);
+    let targetUserId = socket.userId;
+    if (!targetUserId) {
+      for (const [userId, socketId] of onlineUsers.entries()) {
+        if (socketId === socket.id) {
+          targetUserId = userId;
+          break;
         }
-
-        // Broadcast offline status and lastSeen to all clients
-        io.emit('user_status', { 
-          userId: userId.toString(), 
-          status: 'offline', 
-          lastSeen: lastSeenDate.toISOString() 
-        });
-        break;
       }
+    }
+
+    if (targetUserId) {
+      const uIdStr = targetUserId.toString();
+      onlineUsers.delete(uIdStr);
+      console.log(`User ${uIdStr} went offline (socket disconnected)`);
+
+      const lastSeenDate = new Date();
+      try {
+        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: false, lastSeen: lastSeenDate });
+      } catch (dbErr) {
+        console.error(`Failed to update lastSeen for user ${uIdStr}:`, dbErr);
+      }
+
+      // Broadcast offline status and lastSeen to all clients
+      io.emit('user_status', { 
+        userId: uIdStr, 
+        status: 'offline', 
+        lastSeen: lastSeenDate.toISOString() 
+      });
     }
   });
 });

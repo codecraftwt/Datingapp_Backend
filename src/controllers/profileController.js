@@ -86,28 +86,36 @@ exports.saveQuestionnaire = async (req, res) => {
     }
 
     // Ensure profileImage and profileImages store valid Cloudinary URLs, Data URIs, or local /uploads/ URLs
-    let finalProfileImages = [];
+    let activeMediaList = [];
     if (Array.isArray(profileImages) && profileImages.length > 0) {
+      activeMediaList = profileImages;
+    } else if (Array.isArray(incomingPhotos) && incomingPhotos.length > 0) {
+      activeMediaList = incomingPhotos;
+    } else if (Array.isArray(incomingMedia) && incomingMedia.length > 0) {
+      activeMediaList = incomingMedia;
+    }
+
+    let finalProfileImages = [];
+    if (activeMediaList.length > 0) {
       finalProfileImages = await Promise.all(
-        profileImages.map(async (img) => {
+        activeMediaList.map(async (img) => {
+          if (!img || typeof img !== 'string' || img === 'null' || img === 'undefined') return null;
           if (
-            typeof img === 'string' &&
-            (img.startsWith('http://') || img.startsWith('https://') || img.startsWith('data:image/') || img.startsWith('data:video/'))
+            img.startsWith('http://') ||
+            img.startsWith('https://') ||
+            img.startsWith('data:image/') ||
+            img.startsWith('data:video/')
           ) {
             return img;
           }
-          if (typeof img === 'string' && (img.startsWith('file://') || img.startsWith('content://'))) {
+          if (img.startsWith('file://') || img.startsWith('content://')) {
             try {
-              const cloudRes = await cloudinary.uploader.unsigned_upload(img, 'Dating_Profiles', { resource_type: 'auto' });
+              const isVid = isBackendVideoUrl(img);
+              const cloudRes = await cloudinary.uploader.upload(img, { folder: 'dating_app_profiles', resource_type: isVid ? 'video' : 'auto' });
               return cloudRes.secure_url;
-            } catch (e) {
-              try {
-                const cloudRes = await cloudinary.uploader.upload(img, { folder: 'dating_app_profiles', resource_type: 'auto' });
-                return cloudRes.secure_url;
-              } catch (err2) {
-                console.warn('Auto Cloudinary upload error:', err2.message);
-                return null;
-              }
+            } catch (err) {
+              console.warn('Auto Cloudinary upload error:', err.message);
+              return null;
             }
           }
           return null;
@@ -116,27 +124,15 @@ exports.saveQuestionnaire = async (req, res) => {
       finalProfileImages = finalProfileImages.filter(Boolean);
     }
 
-    // Combine all valid media URLs (from profileImages, photos, videos, and media sent in body)
-    const bodyVideos = Array.isArray(incomingVideos) ? incomingVideos : [];
-    const bodyPhotos = Array.isArray(incomingPhotos) ? incomingPhotos : [];
-    const bodyMedia = Array.isArray(incomingMedia) ? incomingMedia : [];
-
-    const allMediaUrls = Array.from(
-      new Set([
-        ...finalProfileImages,
-        ...bodyPhotos,
-        ...bodyVideos,
-        ...bodyMedia
-      ].filter((p) => p && typeof p === 'string' && p.startsWith('http')))
-    );
-
-    const detectedVideos = allMediaUrls.filter((p) => isBackendVideoUrl(p));
+    const detectedVideos = finalProfileImages.filter((p) => isBackendVideoUrl(p));
+    const detectedPhotos = finalProfileImages.filter((p) => !isBackendVideoUrl(p));
 
     let finalProfileImage =
       typeof profileImage === 'string' &&
       (profileImage.startsWith('http') || profileImage.startsWith('data:image/') || profileImage.startsWith('data:video/'))
         ? profileImage
-        : null;
+        : (finalProfileImages[0] || null);
+
     if (!finalProfileImage && typeof profileImage === 'string' && (profileImage.startsWith('file://') || profileImage.startsWith('content://'))) {
       try {
         const cloudRes = await cloudinary.uploader.upload(profileImage, { folder: 'dating_app_profiles', resource_type: 'auto' });
@@ -170,10 +166,10 @@ exports.saveQuestionnaire = async (req, res) => {
       ageRangeMax,
       distanceRange,
       profileImage: finalProfileImage,
-      profileImages: allMediaUrls,
-      photos: allMediaUrls,
+      profileImages: finalProfileImages,
+      photos: detectedPhotos.length > 0 ? detectedPhotos : finalProfileImages,
       videos: detectedVideos,
-      media: allMediaUrls,
+      media: finalProfileImages,
       bio,
       gender,
       languages,
@@ -577,18 +573,23 @@ exports.getQuestionnaires = async (req, res) => {
 
         const hiddenSet = new Set(Array.isArray(u.hiddenMedia) ? u.hiddenMedia : []);
 
-        const rawProfileImages = Array.isArray(u.profileImages) && u.profileImages.length > 0
-          ? u.profileImages
-          : (u.profileImage ? [u.profileImage] : []);
+        const rawProfileImages = (Array.isArray(u.profileImages) ? u.profileImages : [])
+          .filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined');
 
-        const publicProfileImages = rawProfileImages.filter((p) => p && !hiddenSet.has(p));
-        const publicPhotos = (u.photos || publicProfileImages).filter((p) => p && !hiddenSet.has(p));
-        const publicVideos = (u.videos || (u.profileImages || []).filter((p) => isBackendVideoUrl(p))).filter((p) => p && !hiddenSet.has(p));
-        const publicMedia = (u.media || publicPhotos).filter((p) => p && !hiddenSet.has(p));
+        const activeMediaSet = new Set(
+          rawProfileImages.length > 0
+            ? rawProfileImages
+            : (u.profileImage && u.profileImage !== 'null' ? [u.profileImage] : [])
+        );
 
-        const safeProfileImage = hiddenSet.has(u.profileImage)
-          ? (publicProfileImages[0] || publicPhotos[0] || '')
-          : (u.profileImage || publicProfileImages[0] || publicPhotos[0] || '');
+        const publicProfileImages = Array.from(activeMediaSet).filter((p) => !hiddenSet.has(p));
+        const publicPhotos = publicProfileImages.filter((p) => !isBackendVideoUrl(p));
+        const publicVideos = publicProfileImages.filter((p) => isBackendVideoUrl(p));
+        const publicMedia = publicProfileImages;
+
+        const safeProfileImage = (u.profileImage && activeMediaSet.has(u.profileImage) && !hiddenSet.has(u.profileImage))
+          ? u.profileImage
+          : (publicProfileImages[0] || '');
 
         return {
           id: u._id,
@@ -625,7 +626,7 @@ exports.getQuestionnaires = async (req, res) => {
           weight: u.weight || '',
           job: u.job || '',
           college: u.college || '',
-          isOnline: (u.isLoggedIn === true) || (global.onlineUsers ? global.onlineUsers.has((u._id || u.id).toString()) : false),
+          isOnline: global.onlineUsers ? global.onlineUsers.has((u._id || u.id).toString()) : false,
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
       })
@@ -688,8 +689,9 @@ exports.getProfile = async (req, res) => {
         bio: freshUser.bio || '',
         permanentAddress: freshUser.permanentAddress,
         currentLocation: freshUser.currentLocation,
-        location: freshUser.location,
-        isLoggedIn: freshUser.isLoggedIn,
+        isOnline: global.onlineUsers ? global.onlineUsers.has(freshUser._id.toString()) : false,
+        isLoggedIn: global.onlineUsers ? global.onlineUsers.has(freshUser._id.toString()) : false,
+        lastSeen: freshUser.lastSeen || freshUser.updatedAt || freshUser.createdAt,
         fcmToken: freshUser.fcmToken,
       }
     });
@@ -742,20 +744,23 @@ exports.getUserById = async (req, res) => {
       .filter(item => item && item.hiddenForUserId && item.hiddenForUserId.toString() === currentUserIdStr)
       .map(item => item.mediaUrl);
 
-    const filterPublicMedia = (arr) => {
-      if (!Array.isArray(arr)) return [];
-      return arr.filter(url => typeof url === 'string' && url.trim().length > 0 && !userHiddenMediaList.includes(url));
-    };
+    const validTargetProfileImages = (Array.isArray(targetUser.profileImages) ? targetUser.profileImages : [])
+      .filter(p => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined');
 
-    const publicProfileImages = filterPublicMedia(targetUser.profileImages);
-    const publicPhotos = filterPublicMedia(targetUser.photos);
-    const publicVideos = filterPublicMedia(targetUser.videos);
-    const publicMedia = filterPublicMedia(targetUser.media);
+    const activeTargetSet = new Set(
+      validTargetProfileImages.length > 0
+        ? validTargetProfileImages
+        : (targetUser.profileImage && targetUser.profileImage !== 'null' ? [targetUser.profileImage] : [])
+    );
 
-    let safeProfileImage = targetUser.profileImage || '';
-    if (safeProfileImage && userHiddenMediaList.includes(safeProfileImage)) {
-      safeProfileImage = publicProfileImages[0] || publicPhotos[0] || publicMedia[0] || '';
-    }
+    const publicProfileImages = Array.from(activeTargetSet).filter(url => !userHiddenMediaList.includes(url));
+    const publicPhotos = publicProfileImages.filter(p => !isBackendVideoUrl(p));
+    const publicVideos = publicProfileImages.filter(p => isBackendVideoUrl(p));
+    const publicMedia = publicProfileImages;
+
+    let safeProfileImage = (targetUser.profileImage && activeTargetSet.has(targetUser.profileImage) && !userHiddenMediaList.includes(targetUser.profileImage))
+      ? targetUser.profileImage
+      : (publicProfileImages[0] || '');
 
     // Calculate age
     let computedAge = targetUser.age;
@@ -805,7 +810,7 @@ exports.getUserById = async (req, res) => {
         weight: targetUser.weight || '',
         job: targetUser.job || '',
         college: targetUser.college || '',
-        isOnline: (targetUser.isLoggedIn === true) || (global.onlineUsers ? global.onlineUsers.has(targetUser._id.toString()) : false),
+        isOnline: global.onlineUsers ? global.onlineUsers.has(targetUser._id.toString()) : false,
         lastSeen: targetUser.lastSeen || targetUser.updatedAt || targetUser.createdAt,
       }
     });
@@ -823,9 +828,10 @@ exports.getOnlineUsers = async (req, res) => {
     const currentUser = await User.findById(req.user._id);
     const currentUserCoords = getUserCoordinates(currentUser);
 
+    const activeOnlineIds = global.onlineUsers ? Array.from(global.onlineUsers.keys()) : [];
+
     const users = await User.find({
-      _id: { $ne: req.user._id },
-      isLoggedIn: true
+      _id: { $in: activeOnlineIds, $ne: req.user._id }
     });
     
     return res.status(200).json({
@@ -1003,16 +1009,23 @@ exports.removeProfilePhoto = async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
+    const cleanFilter = (url) => typeof url === 'string' && url.trim().length > 0 && url !== 'null' && url !== imageUrl;
+
     let updatedImages = user.profileImages ? [...user.profileImages] : [];
     if (typeof index === 'number' && index >= 0 && index < 9) {
       updatedImages[index] = null;
     } else {
       updatedImages = updatedImages.map(img => img === imageUrl ? null : img);
     }
-    user.profileImages = updatedImages;
 
-    if (user.profileImage === imageUrl || index === 0) {
-      user.profileImage = null;
+    const cleanProfileImages = updatedImages.filter(cleanFilter);
+    user.profileImages = cleanProfileImages;
+    user.photos = (user.photos || []).filter(cleanFilter);
+    user.videos = (user.videos || []).filter(cleanFilter);
+    user.media = (user.media || []).filter(cleanFilter);
+
+    if (user.profileImage === imageUrl || index === 0 || !cleanProfileImages.includes(user.profileImage)) {
+      user.profileImage = cleanProfileImages[0] || null;
     }
 
     try {
@@ -1288,23 +1301,24 @@ exports.uploadMainPhoto = async (req, res) => {
 exports.removeMainPhoto = async (req, res) => {
   try {
     const currentUser = await User.findById(req.user._id);
-    const updatedProfileImages = Array.isArray(currentUser?.profileImages) ? [...currentUser.profileImages] : [];
-    if (updatedProfileImages.length > 0) {
-      updatedProfileImages[0] = null;
-    }
+    const oldMainPhoto = currentUser?.profileImage;
 
-    const updatedPhotos = Array.isArray(currentUser?.photos) ? [...currentUser.photos] : [];
-    if (updatedPhotos.length > 0) {
-      updatedPhotos[0] = null;
-    }
+    const cleanFilter = (url) => typeof url === 'string' && url.trim().length > 0 && url !== 'null' && url !== oldMainPhoto;
+
+    const updatedProfileImages = (currentUser?.profileImages || []).filter(cleanFilter);
+    const updatedPhotos = (currentUser?.photos || []).filter(cleanFilter);
+    const updatedVideos = (currentUser?.videos || []).filter(cleanFilter);
+    const updatedMedia = (currentUser?.media || []).filter(cleanFilter);
 
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
         $set: {
-          profileImage: null,
+          profileImage: updatedProfileImages[0] || null,
           profileImages: updatedProfileImages,
           photos: updatedPhotos,
+          videos: updatedVideos,
+          media: updatedMedia,
         },
       },
       { new: true }
@@ -1425,6 +1439,12 @@ exports.removeGalleryMedia = async (req, res) => {
     const slotIndex = parseInt(req.params?.slotIndex ?? req.body?.slotIndex ?? 1, 10);
     const currentUser = await User.findById(req.user._id);
 
+    const targetUrl = (currentUser?.photos && currentUser.photos[slotIndex]) ||
+                      (currentUser?.media && currentUser.media[slotIndex]) ||
+                      (currentUser?.profileImages && currentUser.profileImages[slotIndex]);
+
+    const cleanFilter = (url) => typeof url === 'string' && url.trim().length > 0 && url !== 'null' && url !== targetUrl;
+
     const photosArr = Array.isArray(currentUser?.photos) ? [...currentUser.photos] : [];
     if (slotIndex < photosArr.length) {
       photosArr[slotIndex] = null;
@@ -1435,12 +1455,25 @@ exports.removeGalleryMedia = async (req, res) => {
       mediaArr[slotIndex] = null;
     }
 
+    const profileImagesArr = Array.isArray(currentUser?.profileImages) ? [...currentUser.profileImages] : [];
+    if (slotIndex < profileImagesArr.length) {
+      profileImagesArr[slotIndex] = null;
+    }
+
+    const cleanPhotos = photosArr.filter(cleanFilter);
+    const cleanMedia = mediaArr.filter(cleanFilter);
+    const cleanProfileImages = profileImagesArr.filter(cleanFilter);
+    const cleanVideos = (currentUser?.videos || []).filter(cleanFilter);
+
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
         $set: {
-          photos: photosArr,
-          media: mediaArr,
+          profileImages: cleanProfileImages,
+          photos: cleanPhotos,
+          media: cleanMedia,
+          videos: cleanVideos,
+          profileImage: currentUser.profileImage === targetUrl ? (cleanProfileImages[0] || null) : currentUser.profileImage,
         },
       },
       { new: true }

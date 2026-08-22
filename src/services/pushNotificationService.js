@@ -127,6 +127,8 @@ const sendPushNotification = async (targetUserId, { title, body, data = {} }) =>
         }
       }
     }
+    payloadData.type = notificationType;
+    if (senderId) payloadData.senderId = senderId.toString();
     payloadData.notificationId = (notificationId || Date.now()).toString();
     payloadData.click_action = 'FLUTTER_NOTIFICATION_CLICK';
 

@@ -162,24 +162,15 @@ exports.register = async (req, res) => {
       currentLocation: currentLocationObj, // Optional (null/undefined if not fetched)
       location: currentLocationObj?.location || permanentAddressObj.location,
       fcmToken: req.body.fcmToken || null,
-      isLoggedIn: true,
+      isLoggedIn: false,
+      currentToken: null,
       lastSeen: new Date(),
     });
 
     await newUser.save();
 
-    const token = jwt.sign(
-      { userId: newUser._id },
-      process.env.JWT_SECRET || 'super_secret_dating_app_token_key_123!',
-      { expiresIn: '7d' }
-    );
-
-    newUser.currentToken = token;
-    await newUser.save();
-
     return res.status(201).json({
       message: 'User registered successfully',
-      token,
       user: {
         id: newUser._id,
         name: newUser.name,
@@ -230,13 +221,32 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Invalid email or password.' });
     }
 
-    // Single-device login check: If active token or session exists and forceLogoutAll is false, block login
-    if ((user.currentToken || user.isLoggedIn) && forceLogoutAll !== true) {
-      console.log(`[AUTH CONTROLLER] Blocking login for ${user.email} (Active session exists on another device).`);
-      return res.status(409).json({
-        status: 'DEVICE_LIMIT_REACHED',
-        message: 'User is already logged in, please Logout from all devices.',
-      });
+    // Single-device login check: If active valid token exists in DB and forceLogoutAll is false, block login
+    if (user.currentToken && forceLogoutAll !== true) {
+      let isTokenActive = false;
+      for (const secret of JWT_SECRETS) {
+        try {
+          jwt.verify(user.currentToken, secret);
+          isTokenActive = true;
+          break;
+        } catch (err) {
+          // Token expired or invalid
+        }
+      }
+
+      if (isTokenActive) {
+        console.log(`[AUTH CONTROLLER] Blocking login for ${user.email} (Active token exists in database).`);
+        return res.status(409).json({
+          status: 'DEVICE_LIMIT_REACHED',
+          message: 'Device limit reached. User is already logged in, please Logout from all devices.',
+        });
+      } else {
+        // Token was expired or invalid - clear stale token
+        console.log(`[AUTH CONTROLLER] Clearing expired/invalid token for ${user.email}.`);
+        await User.findByIdAndUpdate(user._id, {
+          $set: { currentToken: null, isLoggedIn: false }
+        });
+      }
     }
 
     const token = jwt.sign(

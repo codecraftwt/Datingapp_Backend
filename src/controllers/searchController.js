@@ -1,6 +1,17 @@
 const User = require('../models/User');
 const Block = require('../models/Block');
 
+const isBackendVideoUrl = (url) => {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  return (
+    lower.includes('/video/upload/') ||
+    lower.includes('/video/') ||
+    lower.includes('video') ||
+    /\.(mp4|mov|webm|3gp|mkv|avi|m4v|flv)($|\?|#)/i.test(lower)
+  );
+};
+
 /**
  * Helper function to calculate Haversine distance in kilometers
  */
@@ -325,19 +336,23 @@ exports.advancedSearch = async (req, res) => {
     const formattedUsers = paginatedUsers.map((user) => {
       const hiddenSet = new Set(Array.isArray(user.hiddenMedia) ? user.hiddenMedia : []);
 
-      const rawProfileImages = Array.isArray(user.profileImages) && user.profileImages.length > 0
-        ? user.profileImages
-        : (user.profileImage ? [user.profileImage] : []);
+      const validImages = (Array.isArray(user.profileImages) ? user.profileImages : [])
+        .filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined');
 
-      const publicProfileImages = rawProfileImages.filter((p) => p && !hiddenSet.has(p));
-      const publicPhotos = (user.photos || publicProfileImages).filter((p) => p && !hiddenSet.has(p));
-      const publicVideos = (user.videos || (user.profileImages || []).filter((p) => p && (p.includes('/video/') || p.includes('video') || /\.(mp4|mov|webm|3gp|mkv)($|\?)/i.test(p)))).filter((p) => p && !hiddenSet.has(p));
-      const publicMedia = (user.media || publicPhotos).filter((p) => p && !hiddenSet.has(p));
+      const activeSet = new Set(
+        validImages.length > 0
+          ? validImages
+          : (user.profileImage && user.profileImage !== 'null' ? [user.profileImage] : [])
+      );
 
-      // Calculate main non-hidden profile image safely
-      const safeProfileImage = hiddenSet.has(user.profileImage)
-        ? (publicProfileImages[0] || publicPhotos[0] || null)
-        : (user.profileImage || publicProfileImages[0] || publicPhotos[0] || null);
+      const publicProfileImages = Array.from(activeSet).filter((p) => !hiddenSet.has(p));
+      const publicPhotos = publicProfileImages.filter((p) => !isBackendVideoUrl(p));
+      const publicVideos = publicProfileImages.filter((p) => isBackendVideoUrl(p));
+      const publicMedia = publicProfileImages;
+
+      const safeProfileImage = (user.profileImage && activeSet.has(user.profileImage) && !hiddenSet.has(user.profileImage))
+        ? user.profileImage
+        : (publicProfileImages[0] || null);
 
       return {
         _id: user._id,
@@ -369,6 +384,8 @@ exports.advancedSearch = async (req, res) => {
         zodiac: user.zodiac,
         lookingFor: user.lookingFor,
         orientation: user.orientation,
+        isOnline: global.onlineUsers ? global.onlineUsers.has(user._id.toString()) : false,
+        lastSeen: user.lastSeen || user.updatedAt || user.createdAt,
       };
     });
 

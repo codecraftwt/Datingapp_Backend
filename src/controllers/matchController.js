@@ -377,6 +377,8 @@ exports.getLikes = async (req, res) => {
         job: u.job || '',
         college: u.college || '',
         isSuperLike: isSuper,
+        isOnline: global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false,
+        lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
       };
     });
 
@@ -478,7 +480,7 @@ exports.getMatches = async (req, res) => {
           weight: u.weight || '',
           job: u.job || '',
           college: u.college || '',
-          isOnline: (u.isLoggedIn === true) || (global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false),
+          isOnline: global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false,
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
       })
