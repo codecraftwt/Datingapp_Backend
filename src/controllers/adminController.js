@@ -217,11 +217,25 @@ exports.getAllRegisteredUsers = async (req, res) => {
     }
 
     // Sort order setup
+/**
+ * Helper to check if a user is currently online (Socket Map, Socket Room, or isLoggedIn flag)
+ */
+const checkIsOnline = (user) => {
+  if (!user) return false;
+  const uIdStr = (user._id || user.id || user).toString();
+  if (global.onlineUsers && global.onlineUsers.has(uIdStr)) return true;
+  if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
+    const rm = global.io.sockets.adapter.rooms.get(uIdStr);
+    if (rm && rm.size > 0) return true;
+  }
+  if (user && typeof user === 'object' && user.isLoggedIn === true) return true;
+  return false;
+};
+
     const sortOrder = order === 'asc' ? 1 : -1;
     const sortObj = { [sortBy]: sortOrder };
 
     const totalUsersCount = await User.countDocuments({});
-    const onlineUsersCount = global.onlineUsers ? global.onlineUsers.size : 0;
     const menCount = await User.countDocuments({ gender: /^men$/i });
     const womenCount = await User.countDocuments({ gender: /^women$/i });
 
@@ -239,15 +253,21 @@ exports.getAllRegisteredUsers = async (req, res) => {
     const rawUsers = await query.lean();
     const filteredCount = await User.countDocuments(filter);
 
+    let activeOnlineCalcCount = 0;
     const users = rawUsers.map((u) => {
-      const uIdStr = (u._id || u.id)?.toString();
-      const isOnline = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
+      const isOnline = checkIsOnline(u);
+      if (isOnline) activeOnlineCalcCount++;
       return {
         ...u,
         isOnline,
         isLoggedIn: isOnline,
       };
     });
+
+    const onlineUsersCount = Math.max(
+      global.onlineUsers ? global.onlineUsers.size : 0,
+      activeOnlineCalcCount
+    );
 
     return res.status(200).json({
       success: true,
