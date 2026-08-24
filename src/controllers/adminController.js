@@ -218,7 +218,7 @@ exports.getAllRegisteredUsers = async (req, res) => {
 
     // Sort order setup
 /**
- * Helper to check if a user is currently online (Socket Map, Socket Room, or isLoggedIn flag)
+ * Helper to check if a user is currently online (Only if user has active network & app open)
  */
 const checkIsOnline = (user) => {
   if (!user) return false;
@@ -228,7 +228,6 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) return true;
   }
-  if (user && typeof user === 'object' && user.isLoggedIn === true) return true;
   return false;
 };
 

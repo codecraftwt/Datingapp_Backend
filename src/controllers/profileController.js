@@ -33,7 +33,6 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) return true;
   }
-  if (user && typeof user === 'object' && user.isLoggedIn === true) return true;
   return false;
 };
 
