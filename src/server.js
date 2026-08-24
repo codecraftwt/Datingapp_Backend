@@ -28,6 +28,8 @@ const PORT = process.env.PORT || 5000;
 
 // Create HTTP server
 const server = http.createServer(app);
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 
 // Initialize Socket.IO with mobile network ping configuration
 const io = new Server(server, {
@@ -35,8 +37,8 @@ const io = new Server(server, {
     origin: '*',
     methods: ['GET', 'POST'],
   },
-  pingTimeout: 10000,
-  pingInterval: 10000,
+  pingTimeout: 30000,
+  pingInterval: 25000,
   transports: ['websocket', 'polling'],
 });
 
@@ -194,10 +196,6 @@ io.on('connection', (socket) => {
               status: 'delivered',
             };
             io.to(senderIdStr).emit('message_delivered', deliveryPayload);
-            const senderSocketId = onlineUsers.get(senderIdStr);
-            if (senderSocketId && senderSocketId !== socket.id) {
-              io.to(senderSocketId).emit('message_delivered', deliveryPayload);
-            }
           });
         }
       } catch (err) {
@@ -267,10 +265,20 @@ io.on('connection', (socket) => {
   });
 
   // Handle sending one-to-one message
-  socket.on('send_message', async ({ senderId, receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId }) => {
+  socket.on('send_message', async (data, callback) => {
     try {
-      if (!senderId || !receiverId) return;
-      if (!text && !mediaUrl && !stickerId) return;
+      const payloadData = typeof data === 'object' ? data : {};
+      const { senderId, receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId } = payloadData;
+      const ack = typeof callback === 'function' ? callback : (typeof data === 'function' ? data : null);
+
+      if (!senderId || !receiverId) {
+        if (ack) ack({ status: 'error', message: 'Missing senderId or receiverId' });
+        return;
+      }
+      if (!text && !mediaUrl && !stickerId) {
+        if (ack) ack({ status: 'error', message: 'Missing content' });
+        return;
+      }
 
       const sIdStr = senderId.toString();
       const rIdStr = receiverId.toString();
@@ -291,7 +299,7 @@ io.on('connection', (socket) => {
       });
       await newMessage.save();
 
-      const senderUser = await User.findById(senderId).select('firstName name');
+      const senderUser = await User.findById(senderId).select('firstName name').lean();
       const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
 
       const msgData = {
@@ -310,25 +318,24 @@ io.on('connection', (socket) => {
         tempId: tempId || null
       };
 
-      // Emit to receiver room & socket ID
+      // Emit to receiver room
       io.to(rIdStr).emit('receive_message', msgData);
-      const receiverSocketId = onlineUsers.get(rIdStr);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit('receive_message', msgData);
-      }
 
       if (isReceiverOnline) {
         console.log(`Socket: Message sent and delivered from ${senderId} to online receiver ${receiverId}`);
         const deliveryPayload = { messageId: newMessage._id.toString(), tempId: tempId || null, receiverId: rIdStr, status: 'delivered' };
         io.to(sIdStr).emit('message_delivered', deliveryPayload);
-        socket.emit('message_delivered', deliveryPayload);
       } else {
         console.log(`Socket: Message sent as pending from ${senderId} to offline receiver ${receiverId}`);
       }
 
-      // Confirm send back to sender room & socket
+      // Confirm send back to sender room
       io.to(sIdStr).emit('message_sent', msgData);
-      socket.emit('message_sent', msgData);
+
+      // Instantly invoke ack callback if client provided one
+      if (ack) {
+        ack({ status: 'ok', data: msgData });
+      }
 
       // Trigger FCM Push Notification for Receiver
       let notificationText = '💬 Sent a message';
@@ -365,6 +372,9 @@ io.on('connection', (socket) => {
       }).catch(err => console.error('Chat FCM push error:', err));
     } catch (err) {
       console.error('Error handling send_message socket event:', err);
+      if (typeof callback === 'function') {
+        callback({ status: 'error', error: err.message });
+      }
     }
   });
 

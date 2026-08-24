@@ -7,6 +7,21 @@ const Notification = require('../models/Notification');
 const { sendPushNotification } = require('../services/pushNotificationService');
 
 /**
+ * Helper to check if a user is currently online (Socket Map, Socket Room, or isLoggedIn flag)
+ */
+const checkIsOnline = (user) => {
+  if (!user) return false;
+  const uIdStr = (user._id || user.id || user).toString();
+  if (global.onlineUsers && global.onlineUsers.has(uIdStr)) return true;
+  if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
+    const rm = global.io.sockets.adapter.rooms.get(uIdStr);
+    if (rm && rm.size > 0) return true;
+  }
+  if (user && typeof user === 'object' && user.isLoggedIn === true) return true;
+  return false;
+};
+
+/**
  * Helper to get all blocked user IDs associated with currentUserId
  */
 const getBlockedUserIds = async (currentUserId) => {
@@ -377,7 +392,7 @@ exports.getLikes = async (req, res) => {
         job: u.job || '',
         college: u.college || '',
         isSuperLike: isSuper,
-        isOnline: global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false,
+        isOnline: checkIsOnline(u),
         lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
       };
     });
@@ -480,7 +495,7 @@ exports.getMatches = async (req, res) => {
           weight: u.weight || '',
           job: u.job || '',
           college: u.college || '',
-          isOnline: global.onlineUsers ? global.onlineUsers.has(u._id.toString()) : false,
+          isOnline: checkIsOnline(u),
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
       })

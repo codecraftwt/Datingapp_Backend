@@ -25,6 +25,18 @@ const isBackendVideoUrl = (url) => {
   );
 };
 
+const checkIsOnline = (user) => {
+  if (!user) return false;
+  const uIdStr = (user._id || user.id || user).toString();
+  if (global.onlineUsers && global.onlineUsers.has(uIdStr)) return true;
+  if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
+    const rm = global.io.sockets.adapter.rooms.get(uIdStr);
+    if (rm && rm.size > 0) return true;
+  }
+  if (user && typeof user === 'object' && user.isLoggedIn === true) return true;
+  return false;
+};
+
 
 /**
  * Save/Update user dating profile questionnaire
@@ -626,7 +638,7 @@ exports.getQuestionnaires = async (req, res) => {
           weight: u.weight || '',
           job: u.job || '',
           college: u.college || '',
-          isOnline: global.onlineUsers ? global.onlineUsers.has((u._id || u.id).toString()) : false,
+          isOnline: checkIsOnline(u),
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
       })
@@ -689,8 +701,8 @@ exports.getProfile = async (req, res) => {
         bio: freshUser.bio || '',
         permanentAddress: freshUser.permanentAddress,
         currentLocation: freshUser.currentLocation,
-        isOnline: global.onlineUsers ? global.onlineUsers.has(freshUser._id.toString()) : false,
-        isLoggedIn: global.onlineUsers ? global.onlineUsers.has(freshUser._id.toString()) : false,
+        isOnline: checkIsOnline(freshUser),
+        isLoggedIn: checkIsOnline(freshUser),
         lastSeen: freshUser.lastSeen || freshUser.updatedAt || freshUser.createdAt,
         fcmToken: freshUser.fcmToken,
       }
@@ -810,7 +822,7 @@ exports.getUserById = async (req, res) => {
         weight: targetUser.weight || '',
         job: targetUser.job || '',
         college: targetUser.college || '',
-        isOnline: global.onlineUsers ? global.onlineUsers.has(targetUser._id.toString()) : false,
+        isOnline: checkIsOnline(targetUser),
         lastSeen: targetUser.lastSeen || targetUser.updatedAt || targetUser.createdAt,
       }
     });
