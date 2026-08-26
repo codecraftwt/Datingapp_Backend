@@ -12,6 +12,22 @@ const isBackendVideoUrl = (url) => {
   );
 };
 
+const checkIsOnline = (user) => {
+  if (!user) return false;
+  const uIdStr = (user._id || user.id || user).toString();
+  if (global.onlineUsers && global.onlineUsers.has(uIdStr)) return true;
+  if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
+    const rm = global.io.sockets.adapter.rooms.get(uIdStr);
+    if (rm && rm.size > 0) return true;
+  }
+  if (user.isOnline === true) return true;
+  if (user.lastSeen) {
+    const diff = Date.now() - new Date(user.lastSeen).getTime();
+    if (!isNaN(diff) && diff < 60 * 1000) return true;
+  }
+  return false;
+};
+
 /**
  * Helper function to calculate Haversine distance in kilometers
  */
@@ -384,7 +400,8 @@ exports.advancedSearch = async (req, res) => {
         zodiac: user.zodiac,
         lookingFor: user.lookingFor,
         orientation: user.orientation,
-        isOnline: global.onlineUsers ? global.onlineUsers.has(user._id.toString()) : false,
+        isOnline: checkIsOnline(user),
+        isLoggedIn: checkIsOnline(user),
         lastSeen: user.lastSeen || user.updatedAt || user.createdAt,
       };
     });

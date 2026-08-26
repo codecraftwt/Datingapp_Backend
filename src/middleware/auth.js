@@ -79,6 +79,13 @@ const auth = async (req, res, next) => {
       }
     }
 
+    // Automatically keep user online status updated when opening/using the app with network
+    if (userId && mongoose.connection.readyState === 1) {
+      User.findByIdAndUpdate(userId, {
+        $set: { isLoggedIn: true, lastSeen: new Date() }
+      }).catch(() => {});
+    }
+
     req.user = user;
     req.token = token;
     next();

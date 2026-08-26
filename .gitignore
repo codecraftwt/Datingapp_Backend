@@ -55,3 +55,8 @@ coverage/
 .nyc_output/
 dist/
 build/
+
+# Test & Debug Scripts
+test_*.js
+*test*.js
+src/scripts/

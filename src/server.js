@@ -150,33 +150,43 @@ app.get(['/', '/health', '/api/health'], (req, res) => {
 });
 
 
+const extractUserIdStr = (val) => {
+  if (!val) return null;
+  if (typeof val === 'object') {
+    const extracted = val._id || val.id || val.userId;
+    return extracted ? extracted.toString() : null;
+  }
+  return val.toString();
+};
+
 // Store socket mappings: userId -> socket.id
 const onlineUsers = new Map();
 global.onlineUsers = onlineUsers;
 
 // Socket.IO Logic
 io.on('connection', (socket) => {
-  console.log('Socket client connected:', socket.id);
+  console.log(`🟢 [SOCKET CONNECTED] Socket ID: ${socket.id} | Transport: ${socket.conn?.transport?.name || 'unknown'}`);
 
   // User joins and registers their userId
   socket.on('join', async (userId) => {
-    if (userId) {
-      const uIdStr = userId.toString();
+    const uIdStr = extractUserIdStr(userId);
+    console.log(`📥 [SOCKET JOIN EVENT] Raw userId received:`, JSON.stringify(userId), `-> Extracted ID: "${uIdStr}"`);
+    if (uIdStr) {
       socket.userId = uIdStr;
       const now = new Date();
       onlineUsers.set(uIdStr, socket.id);
       socket.join(uIdStr);
-      console.log(`User ${userId} associated with socket ${socket.id} and joined room ${uIdStr}`);
+      console.log(`✅ [SOCKET REGISTERED] User "${uIdStr}" mapped to socket ${socket.id}. Active Online Users (${onlineUsers.size}):`, Array.from(onlineUsers.keys()));
       
-      // Update DB isLoggedIn status & lastSeen
+      // Update DB isLoggedIn & isOnline status & lastSeen
       try {
-        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, lastSeen: now });
+        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, isOnline: true, lastSeen: now });
       } catch (dbErr) {
-        console.error(`Failed to update isLoggedIn for user ${userId}:`, dbErr);
+        console.error(`Failed to update isOnline for user ${userId}:`, dbErr);
       }
 
       // Broadcast online status to all clients
-      io.emit('user_status', { userId: uIdStr, status: 'online' });
+      io.emit('user_status', { userId: uIdStr, status: 'online', isOnline: true });
 
       // Send list of all currently online users to the newly joined user
       socket.emit('online_users_list', {
@@ -206,36 +216,37 @@ io.on('connection', (socket) => {
 
   // Real-time presence ping handler
   socket.on('ping_presence', async (userId) => {
-    if (userId) {
-      const uIdStr = userId.toString();
+    const uIdStr = extractUserIdStr(userId);
+    if (uIdStr) {
       socket.userId = uIdStr;
       const now = new Date();
       const wasOnline = onlineUsers.has(uIdStr);
       onlineUsers.set(uIdStr, socket.id);
       socket.join(uIdStr);
       if (!wasOnline) {
-        io.emit('user_status', { userId: uIdStr, status: 'online' });
+        io.emit('user_status', { userId: uIdStr, status: 'online', isOnline: true });
       }
       try {
-        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, lastSeen: now });
+        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, isOnline: true, lastSeen: now });
       } catch (dbErr) {}
     }
   });
 
   // Real-time explicit offline handler (app minimized/backgrounded or logged out)
   socket.on('going_offline', async (userId) => {
-    const uIdStr = (userId || socket.userId)?.toString();
+    const uIdStr = extractUserIdStr(userId) || extractUserIdStr(socket.userId);
     if (uIdStr) {
       console.log(`User ${uIdStr} going offline (app minimized/backgrounded)`);
       onlineUsers.delete(uIdStr);
       const lastSeenDate = new Date();
       try {
-        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: false, lastSeen: lastSeenDate });
+        await User.findByIdAndUpdate(uIdStr, { isOnline: false, lastSeen: lastSeenDate });
       } catch (dbErr) {}
 
       io.emit('user_status', {
         userId: uIdStr,
         status: 'offline',
+        isOnline: false,
         lastSeen: lastSeenDate.toISOString(),
       });
     }
@@ -243,18 +254,23 @@ io.on('connection', (socket) => {
 
   // Handle explicitly checking online status of a partner user
   socket.on('check_online_status', async ({ targetUserId }) => {
-    if (!targetUserId) return;
-    const targetIdStr = targetUserId.toString();
-    const isOnline = onlineUsers.has(targetIdStr) || (io.sockets.adapter.rooms.has(targetIdStr) && io.sockets.adapter.rooms.get(targetIdStr).size > 0);
+    const targetIdStr = extractUserIdStr(targetUserId);
+    if (!targetIdStr) return;
+    let isOnline = onlineUsers.has(targetIdStr) || (io.sockets.adapter.rooms.has(targetIdStr) && io.sockets.adapter.rooms.get(targetIdStr).size > 0);
     let lastSeen = null;
 
     try {
-      const targetUser = await User.findById(targetUserId).select('lastSeen');
-      if (targetUser && targetUser.lastSeen) {
-        lastSeen = targetUser.lastSeen.toISOString();
+      const targetUser = await User.findById(targetUserId).select('isOnline lastSeen');
+      if (targetUser) {
+        if (targetUser.isOnline === true) isOnline = true;
+        if (targetUser.lastSeen) {
+          lastSeen = targetUser.lastSeen.toISOString();
+          const diff = Date.now() - new Date(targetUser.lastSeen).getTime();
+          if (!isNaN(diff) && diff < 60000) isOnline = true;
+        }
       }
     } catch (err) {
-      console.error('Error fetching lastSeen for target user:', err);
+      console.error('Error fetching online status for target user:', err);
     }
 
     socket.emit('online_status_response', {
@@ -285,8 +301,49 @@ io.on('connection', (socket) => {
 
       const isReceiverOnline = onlineUsers.has(rIdStr) || (io.sockets.adapter.rooms.has(rIdStr) && io.sockets.adapter.rooms.get(rIdStr).size > 0);
       const initialStatus = isReceiverOnline ? 'delivered' : 'sent';
+      const msgId = new mongoose.Types.ObjectId();
+      const createdAt = new Date();
 
+      const msgData = {
+        _id: msgId,
+        senderId: sIdStr,
+        receiverId: rIdStr,
+        text: text || '',
+        messageType: messageType || 'text',
+        mediaUrl: mediaUrl || null,
+        fileName: fileName || null,
+        fileSize: fileSize || null,
+        stickerId: stickerId || null,
+        status: initialStatus,
+        createdAt: createdAt,
+        tempId: tempId || null
+      };
+
+      // ⚡ 0ms INSTANT SOCKET EMISSION (No database blocking!)
+      io.to(rIdStr).emit('receive_message', msgData);
+      const receiverSocketId = onlineUsers.get(rIdStr);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit('receive_message', msgData);
+      }
+
+      io.to(sIdStr).emit('message_sent', msgData);
+
+      if (isReceiverOnline) {
+        console.log(`Socket: Instant message sent and delivered from ${senderId} to online receiver ${receiverId}`);
+        const deliveryPayload = { messageId: msgId.toString(), tempId: tempId || null, receiverId: rIdStr, status: 'delivered' };
+        io.to(sIdStr).emit('message_delivered', deliveryPayload);
+      } else {
+        console.log(`Socket: Instant message sent as pending from ${senderId} to offline receiver ${receiverId}`);
+      }
+
+      // Instantly invoke ack callback if client provided one
+      if (ack) {
+        ack({ status: 'ok', data: msgData });
+      }
+
+      // Save to MongoDB asynchronously in background thread
       const newMessage = new Message({
+        _id: msgId,
         senderId,
         receiverId,
         text,
@@ -295,81 +352,47 @@ io.on('connection', (socket) => {
         fileName,
         fileSize,
         stickerId,
-        status: initialStatus
+        status: initialStatus,
+        createdAt: createdAt
       });
-      await newMessage.save();
+      newMessage.save().catch(err => console.error('Error saving message in background:', err));
 
-      const senderUser = await User.findById(senderId).select('firstName name').lean();
-      const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
+      // Asynchronous FCM Push Notification for Receiver
+      User.findById(senderId).select('firstName name').lean().then((senderUser) => {
+        const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
+        let notificationText = '💬 Sent a message';
+        let notificationTitle = `💬 ${senderName}`;
 
-      const msgData = {
-        _id: newMessage._id,
-        senderId: sIdStr,
-        receiverId: rIdStr,
-        senderName,
-        text: newMessage.text,
-        messageType: newMessage.messageType,
-        mediaUrl: newMessage.mediaUrl,
-        fileName: newMessage.fileName,
-        fileSize: newMessage.fileSize,
-        stickerId: newMessage.stickerId,
-        status: newMessage.status,
-        createdAt: newMessage.createdAt,
-        tempId: tempId || null
-      };
-
-      // Emit to receiver room
-      io.to(rIdStr).emit('receive_message', msgData);
-
-      if (isReceiverOnline) {
-        console.log(`Socket: Message sent and delivered from ${senderId} to online receiver ${receiverId}`);
-        const deliveryPayload = { messageId: newMessage._id.toString(), tempId: tempId || null, receiverId: rIdStr, status: 'delivered' };
-        io.to(sIdStr).emit('message_delivered', deliveryPayload);
-      } else {
-        console.log(`Socket: Message sent as pending from ${senderId} to offline receiver ${receiverId}`);
-      }
-
-      // Confirm send back to sender room
-      io.to(sIdStr).emit('message_sent', msgData);
-
-      // Instantly invoke ack callback if client provided one
-      if (ack) {
-        ack({ status: 'ok', data: msgData });
-      }
-
-      // Trigger FCM Push Notification for Receiver
-      let notificationText = '💬 Sent a message';
-      let notificationTitle = `💬 ${senderName}`;
-
-      if (messageType === 'voice') {
-        notificationTitle = `🎤 Voice Message from ${senderName}`;
-        notificationText = '🎤 Sent a voice note / audio message';
-      } else if (messageType === 'call') {
-        notificationTitle = `📞 Voice Call from ${senderName}`;
-        notificationText = text || '📞 Voice call';
-      } else if (messageType === 'image') {
-        notificationText = '📷 Sent a photo';
-      } else if (messageType === 'video') {
-        notificationText = '🎬 Sent a video';
-      } else if (messageType === 'document') {
-        notificationText = '📄 Sent a document';
-      } else if (messageType === 'sticker') {
-        notificationText = '😊 Sent a sticker';
-      } else if (text) {
-        notificationText = text;
-      }
-
-      sendPushNotification(receiverId, {
-        title: notificationTitle,
-        body: notificationText,
-        data: {
-          type: 'chat',
-          messageType: messageType || 'text',
-          senderId: sIdStr,
-          messageId: newMessage._id.toString(),
-          notificationId: newMessage._id.toString(),
+        if (messageType === 'voice') {
+          notificationTitle = `🎤 Voice Message from ${senderName}`;
+          notificationText = '🎤 Sent a voice note / audio message';
+        } else if (messageType === 'call') {
+          notificationTitle = `📞 Voice Call from ${senderName}`;
+          notificationText = text || '📞 Voice call';
+        } else if (messageType === 'image') {
+          notificationText = '📷 Sent a photo';
+        } else if (messageType === 'video') {
+          notificationText = '🎬 Sent a video';
+        } else if (messageType === 'document') {
+          notificationText = '📄 Sent a document';
+        } else if (messageType === 'sticker') {
+          notificationText = '😊 Sent a sticker';
+        } else if (text) {
+          notificationText = text;
         }
-      }).catch(err => console.error('Chat FCM push error:', err));
+
+        sendPushNotification(receiverId, {
+          title: notificationTitle,
+          body: notificationText,
+          data: {
+            type: 'chat',
+            messageType: messageType || 'text',
+            senderId: sIdStr,
+            messageId: msgId.toString(),
+            notificationId: msgId.toString(),
+          }
+        }).catch(err => console.error('Chat FCM push error:', err));
+      }).catch(() => {});
     } catch (err) {
       console.error('Error handling send_message socket event:', err);
       if (typeof callback === 'function') {
@@ -582,7 +605,7 @@ io.on('connection', (socket) => {
 
       const lastSeenDate = new Date();
       try {
-        await User.findByIdAndUpdate(uIdStr, { isLoggedIn: false, lastSeen: lastSeenDate });
+        await User.findByIdAndUpdate(uIdStr, { isOnline: false, lastSeen: lastSeenDate });
       } catch (dbErr) {
         console.error(`Failed to update lastSeen for user ${uIdStr}:`, dbErr);
       }
@@ -591,6 +614,7 @@ io.on('connection', (socket) => {
       io.emit('user_status', { 
         userId: uIdStr, 
         status: 'offline', 
+        isOnline: false,
         lastSeen: lastSeenDate.toISOString() 
       });
     }

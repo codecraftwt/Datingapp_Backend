@@ -7,7 +7,7 @@ const Notification = require('../models/Notification');
 const { sendPushNotification } = require('../services/pushNotificationService');
 
 /**
- * Helper to check if a user is currently online (Only if user has active network & app open)
+ * Helper to check if a user is currently online (ONLY if user has live socket connection inside app)
  */
 const checkIsOnline = (user) => {
   if (!user) return false;
@@ -16,6 +16,11 @@ const checkIsOnline = (user) => {
   if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) return true;
+  }
+  if (user.isOnline === true) return true;
+  if (user.lastSeen) {
+    const diff = Date.now() - new Date(user.lastSeen).getTime();
+    if (!isNaN(diff) && diff < 60 * 1000) return true;
   }
   return false;
 };

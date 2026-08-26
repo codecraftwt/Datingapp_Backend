@@ -102,12 +102,17 @@ const UserSchema = new mongoose.Schema(
     completionPercentage: { type: Number, default: 0 },
     bio: { type: String, trim: true },
     isLoggedIn: { type: Boolean, default: false },
+    isOnline: { type: Boolean, default: false },
     currentToken: { type: String, default: null },
     lastSeen: { type: Date },
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
     fcmToken: { type: String, default: null },
     lastSuperLikeDate: { type: Date },
+    isFirstLogin: { type: Boolean, default: true },
+    isMobileVerified: { type: Boolean, default: false },
+    emailOtp: { type: String },
+    emailOtpExpires: { type: Date },
   },
   {
     // Explicitly target the collection already created by the user

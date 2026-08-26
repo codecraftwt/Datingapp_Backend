@@ -33,6 +33,11 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) return true;
   }
+  if (user.isOnline === true) return true;
+  if (user.lastSeen) {
+    const diff = Date.now() - new Date(user.lastSeen).getTime();
+    if (!isNaN(diff) && diff < 60 * 1000) return true;
+  }
   return false;
 };
 
@@ -189,7 +194,7 @@ exports.saveQuestionnaire = async (req, res) => {
 
     console.log('--- Save Questionnaire Backend Debug ---');
     console.log('Final saved profileImage:', finalProfileImage);
-    console.log('Final saved profileImages count:', allMediaUrls.length, 'URLs:', allMediaUrls);
+    console.log('Final saved profileImages count:', finalProfileImages.length, 'URLs:', finalProfileImages);
     console.log('Final saved videos count:', detectedVideos.length, 'URLs:', detectedVideos);
     console.log('Incoming latitude:', latitude, 'longitude:', longitude);
 

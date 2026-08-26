@@ -14,6 +14,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const Match = require('../models/Match');
+const emailService = require('../services/emailService');
 
 const JWT_SECRETS = [
   process.env.JWT_SECRET,
@@ -256,9 +257,26 @@ exports.login = async (req, res) => {
     );
 
     // Safely update user status, currentToken, and FCM token
+    let requireMobileVerification = false;
+    if (user.isMobileVerified !== true) {
+      requireMobileVerification = true;
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+
+      try {
+        await User.findByIdAndUpdate(user._id, {
+          $set: { emailOtp: otp, emailOtpExpires: otpExpires }
+        });
+        await emailService.sendMobileVerificationOtp(user.email, otp);
+        console.log(`[AUTH CONTROLLER] Sent mobile verification OTP to registered email ${user.email} on login.`);
+      } catch (emailErr) {
+        console.error(`[AUTH CONTROLLER] Failed to send OTP email to ${user.email}:`, emailErr.message);
+      }
+    }
+
     try {
       console.log(`[BACKEND AUTH] Login payload for ${user.email} - fcmToken:`, fcmToken ? (fcmToken.substring(0, 25) + '...') : 'NONE / UNDEFINED');
-      const updateFields = { isLoggedIn: true, lastSeen: new Date(), currentToken: token };
+      const updateFields = { isLoggedIn: true, isOnline: true, lastSeen: new Date(), currentToken: token };
       if (fcmToken) {
         updateFields.fcmToken = fcmToken;
       }
@@ -268,15 +286,26 @@ exports.login = async (req, res) => {
       console.warn('[AUTH CONTROLLER] Non-fatal user status update error during login:', updateErr.message);
     }
 
+    const isUserVerified = user.isMobileVerified === true;
+
     return res.status(200).json({
-      message: 'Login successful',
+      message: requireMobileVerification
+        ? 'First time login. Mobile verification OTP sent to your registered email.'
+        : 'Login successful',
       token,
+      requireMobileVerification,
+      isMobileVerified: isUserVerified,
+      isFirstLogin: isUserVerified ? false : (user.isFirstLogin !== false),
       user: {
         id: user._id,
         _id: user._id,
         name: user.name,
         email: user.email,
         mobile: user.mobile,
+        isLoggedIn: true,
+        isOnline: true,
+        isMobileVerified: isUserVerified,
+        isFirstLogin: isUserVerified ? false : (user.isFirstLogin !== false),
         gender: user.gender,
         firstName: user.firstName,
         bdayDay: user.bdayDay,
@@ -346,16 +375,18 @@ exports.logout = async (req, res) => {
 };
 
 /**
- * Generate a 6-digit password reset code
+ * Generate a 6-digit password reset OTP and email it to the user
  */
 exports.forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) {
+    await ensureDbConnection();
+    const { email } = req.body || {};
+    if (!email || email.trim() === '') {
       return res.status(400).json({ message: 'Email is required.' });
     }
 
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const cleanEmail = email.trim().toLowerCase();
+    const user = await User.findOne({ email: cleanEmail });
     if (!user) {
       return res.status(404).json({ message: 'User with this email does not exist.' });
     }
@@ -363,16 +394,61 @@ exports.forgotPassword = async (req, res) => {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
 
     user.resetPasswordToken = code;
-    user.resetPasswordExpires = Date.now() + 15 * 60 * 1000;
+    user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000);
     await user.save();
 
+    console.log(`🔑 [DEV DEBUG OTP] Generated Password Reset OTP for ${user.email}: >>> ${code} <<<`);
+
+    try {
+      await emailService.sendPasswordResetOtp(user.email, code);
+      console.log(`[AUTH CONTROLLER] Password reset OTP sent to ${user.email}.`);
+    } catch (emailErr) {
+      console.error(`[AUTH CONTROLLER] Error sending password reset email to ${user.email}:`, emailErr.message);
+      return res.status(500).json({ message: 'Failed to send password reset email. Please try again later.' });
+    }
+
     return res.status(200).json({
-      message: 'Password reset code generated successfully.',
-      code: code
+      success: true,
+      message: `Password reset OTP code has been sent to your registered email: ${user.email}`,
+      email: user.email,
     });
   } catch (error) {
     console.error('Forgot password error:', error);
-    return res.status(500).json({ message: 'Server error during forgot password.' });
+    return res.status(500).json({ message: 'Server error during forgot password process.' });
+  }
+};
+
+/**
+ * Verify 6-digit password reset OTP code
+ */
+exports.verifyResetOtp = async (req, res) => {
+  try {
+    await ensureDbConnection();
+    const { email, code } = req.body || {};
+
+    if (!email || !code) {
+      return res.status(400).json({ message: 'Email and OTP verification code are required.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const user = await User.findOne({
+      email: cleanEmail,
+      resetPasswordToken: code.toString().trim(),
+      resetPasswordExpires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid or expired verification code.' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP code verified successfully. You can now reset your password.',
+      email: user.email,
+    });
+  } catch (error) {
+    console.error('Verify reset OTP error:', error);
+    return res.status(500).json({ message: 'Server error during OTP verification.' });
   }
 };
 
@@ -381,7 +457,8 @@ exports.forgotPassword = async (req, res) => {
  */
 exports.resetPassword = async (req, res) => {
   try {
-    const { email, code, newPassword } = req.body;
+    await ensureDbConnection();
+    const { email, code, newPassword } = req.body || {};
     if (!email || !code || !newPassword) {
       return res.status(400).json({ message: 'Email, code, and new password are required.' });
     }
@@ -390,10 +467,11 @@ exports.resetPassword = async (req, res) => {
       return res.status(400).json({ message: 'Password must be at least 8 characters long.' });
     }
 
+    const cleanEmail = email.trim().toLowerCase();
     const user = await User.findOne({
-      email: email.toLowerCase(),
-      resetPasswordToken: code,
-      resetPasswordExpires: { $gt: Date.now() }
+      email: cleanEmail,
+      resetPasswordToken: code.toString().trim(),
+      resetPasswordExpires: { $gt: new Date() },
     });
 
     if (!user) {
@@ -408,7 +486,7 @@ exports.resetPassword = async (req, res) => {
 
     await user.save();
 
-    return res.status(200).json({ message: 'Password reset successfully.' });
+    return res.status(200).json({ success: true, message: 'Password reset successfully. Please log in with your new password.' });
   } catch (error) {
     console.error('Reset password error:', error);
     return res.status(500).json({ message: 'Server error during password reset.' });
@@ -603,5 +681,129 @@ exports.logout = async (req, res) => {
   } catch (error) {
     console.error('Logout error:', error);
     return res.status(500).json({ message: 'Server error during logout.', error: error.message });
+  }
+};
+
+/**
+ * Send / Resend Mobile Verification OTP to registered email
+ */
+exports.sendMobileOtp = async (req, res) => {
+  try {
+    await ensureDbConnection();
+    const userId = req.user?._id || req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ message: 'Unauthorized. User session not found.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.emailOtp = otp;
+    user.emailOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+
+    console.log(`🔑 [DEV DEBUG OTP] Generated Mobile Verification OTP for ${user.email}: >>> ${otp} <<<`);
+
+    try {
+      await emailService.sendMobileVerificationOtp(user.email, otp);
+    } catch (emailErr) {
+      console.error('[AUTH CONTROLLER] Failed to send mobile OTP email:', emailErr.message);
+      return res.status(500).json({ message: 'Failed to send OTP to registered email. Please check SMTP configuration.', error: emailErr.message });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Verification OTP successfully sent to your registered email: ${user.email}`,
+      email: user.email,
+    });
+
+  } catch (error) {
+    console.error('Send mobile OTP error:', error);
+    return res.status(500).json({ message: 'Server error while sending OTP.', error: error.message });
+  }
+};
+
+/**
+ * Verify Mobile Verification OTP and complete mobile verification
+ */
+exports.verifyMobileOtp = async (req, res) => {
+  try {
+    await ensureDbConnection();
+    const userId = req.user?._id || req.user?.id;
+    const { otp, mobile } = req.body || {};
+
+    if (!userId) {
+      return res.status(401).json({ message: 'Unauthorized. User session not found.' });
+    }
+
+    if (!otp) {
+      return res.status(400).json({ message: 'OTP is required.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    console.log(`[VERIFY OTP DEBUG] User: ${user.email} | Received Input OTP: "${otp.toString().trim()}" | Stored DB OTP: "${user.emailOtp}" | Expired: ${user.emailOtpExpires < new Date()}`);
+
+    if (!user.emailOtp || user.emailOtp !== otp.toString().trim()) {
+      return res.status(400).json({ message: 'Invalid verification OTP code.' });
+    }
+
+    if (!user.emailOtpExpires || user.emailOtpExpires < new Date()) {
+      return res.status(400).json({ message: 'Verification OTP code has expired. Please request a new one.' });
+    }
+
+    let newMobile = user.mobile;
+    if (mobile && mobile.toString().trim() !== '') {
+      const cleanMobile = mobile.toString().trim();
+      if (cleanMobile !== user.mobile) {
+        const existingMobileUser = await User.findOne({ mobile: cleanMobile, _id: { $ne: user._id } });
+        if (existingMobileUser) {
+          return res.status(400).json({ message: 'This mobile number is already registered with another account.' });
+        }
+        newMobile = cleanMobile;
+      }
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        $set: {
+          mobile: newMobile,
+          isMobileVerified: true,
+          isFirstLogin: false,
+        },
+        $unset: {
+          emailOtp: "",
+          emailOtpExpires: ""
+        }
+      },
+      { new: true }
+    );
+
+    console.log(`[VERIFY OTP SUCCESS] User ${updatedUser.email} is now fully verified. isMobileVerified=${updatedUser.isMobileVerified}, isFirstLogin=${updatedUser.isFirstLogin}`);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Mobile number verified successfully.',
+      user: {
+        id: updatedUser._id,
+        _id: updatedUser._id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        mobile: updatedUser.mobile,
+        isMobileVerified: updatedUser.isMobileVerified,
+        isFirstLogin: updatedUser.isFirstLogin,
+      },
+    });
+  } catch (error) {
+    console.error('Verify mobile OTP error:', error);
+    return res.status(500).json({ message: 'Server error during mobile verification.', error: error.message });
   }
 };

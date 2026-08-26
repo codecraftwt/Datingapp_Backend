@@ -218,17 +218,20 @@ exports.getAllRegisteredUsers = async (req, res) => {
 
     // Sort order setup
 /**
- * Helper to check if a user is currently online (Only if user has active network & app open)
+ * Helper to check if a user is currently online (ONLY if user has live socket connection inside app)
  */
 const checkIsOnline = (user) => {
   if (!user) return false;
   const uIdStr = (user._id || user.id || user).toString();
-  if (global.onlineUsers && global.onlineUsers.has(uIdStr)) return true;
+  const inMap = !!(global.onlineUsers && global.onlineUsers.has(uIdStr));
+  let inRoom = false;
   if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
-    if (rm && rm.size > 0) return true;
+    if (rm && rm.size > 0) inRoom = true;
   }
-  return false;
+  const isOnlineFlag = user.isOnline === true;
+  const recentlyActive = !!(user.lastSeen && (Date.now() - new Date(user.lastSeen).getTime()) < 60 * 1000);
+  return inMap || inRoom || isOnlineFlag || recentlyActive;
 };
 
     const sortOrder = order === 'asc' ? 1 : -1;
@@ -239,7 +242,7 @@ const checkIsOnline = (user) => {
     const womenCount = await User.countDocuments({ gender: /^women$/i });
 
     let query = User.find(filter)
-      .select('name firstName email mobile gender age orientation interestedIn lookingFor profileImage profileImages fcmToken isLoggedIn lastSeen createdAt updatedAt')
+      .select('name firstName email mobile gender age orientation interestedIn lookingFor profileImage profileImages fcmToken isLoggedIn isOnline lastSeen createdAt updatedAt')
       .sort(sortObj);
 
     let pageNum = parseInt(page, 10) || 1;
