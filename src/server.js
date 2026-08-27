@@ -159,9 +159,34 @@ const extractUserIdStr = (val) => {
   return val.toString();
 };
 
-// Store socket mappings: userId -> socket.id
+// Store socket mappings: userId -> socket.id and userId -> lastPingTimestamp
 const onlineUsers = new Map();
+const userLastPing = new Map();
 global.onlineUsers = onlineUsers;
+
+// Background Worker: Automatically cleanup stale presence for users whose app was backgrounded/suspended
+setInterval(async () => {
+  const now = Date.now();
+  for (const [userId, lastPingTime] of userLastPing.entries()) {
+    // If a user hasn't sent a presence ping in > 25 seconds (since pings run every 15s when active)
+    if (now - lastPingTime > 25000) {
+      console.log(`⏰ [STALE PRESENCE CLEANUP] User "${userId}" ping timed out (>25s backgrounded). Marking offline.`);
+      userLastPing.delete(userId);
+      onlineUsers.delete(userId);
+      const lastSeenDate = new Date(lastPingTime);
+      try {
+        await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: lastSeenDate });
+      } catch (e) {}
+
+      io.emit('user_status', {
+        userId: userId.toString(),
+        status: 'offline',
+        isOnline: false,
+        lastSeen: lastSeenDate.toISOString(),
+      });
+    }
+  }
+}, 10000);
 
 // Socket.IO Logic
 io.on('connection', (socket) => {
@@ -175,6 +200,7 @@ io.on('connection', (socket) => {
       socket.userId = uIdStr;
       const now = new Date();
       onlineUsers.set(uIdStr, socket.id);
+      userLastPing.set(uIdStr, Date.now());
       socket.join(uIdStr);
       console.log(`✅ [SOCKET REGISTERED] User "${uIdStr}" mapped to socket ${socket.id}. Active Online Users (${onlineUsers.size}):`, Array.from(onlineUsers.keys()));
       
@@ -222,6 +248,7 @@ io.on('connection', (socket) => {
       const now = new Date();
       const wasOnline = onlineUsers.has(uIdStr);
       onlineUsers.set(uIdStr, socket.id);
+      userLastPing.set(uIdStr, Date.now());
       socket.join(uIdStr);
       if (!wasOnline) {
         io.emit('user_status', { userId: uIdStr, status: 'online', isOnline: true });
@@ -238,6 +265,7 @@ io.on('connection', (socket) => {
     if (uIdStr) {
       console.log(`User ${uIdStr} going offline (app minimized/backgrounded)`);
       onlineUsers.delete(uIdStr);
+      userLastPing.delete(uIdStr);
       const lastSeenDate = new Date();
       try {
         await User.findByIdAndUpdate(uIdStr, { isOnline: false, lastSeen: lastSeenDate });
@@ -256,18 +284,13 @@ io.on('connection', (socket) => {
   socket.on('check_online_status', async ({ targetUserId }) => {
     const targetIdStr = extractUserIdStr(targetUserId);
     if (!targetIdStr) return;
-    let isOnline = onlineUsers.has(targetIdStr) || (io.sockets.adapter.rooms.has(targetIdStr) && io.sockets.adapter.rooms.get(targetIdStr).size > 0);
+    const isOnline = onlineUsers.has(targetIdStr);
     let lastSeen = null;
 
     try {
       const targetUser = await User.findById(targetUserId).select('isOnline lastSeen');
-      if (targetUser) {
-        if (targetUser.isOnline === true) isOnline = true;
-        if (targetUser.lastSeen) {
-          lastSeen = targetUser.lastSeen.toISOString();
-          const diff = Date.now() - new Date(targetUser.lastSeen).getTime();
-          if (!isNaN(diff) && diff < 60000) isOnline = true;
-        }
+      if (targetUser && targetUser.lastSeen) {
+        lastSeen = targetUser.lastSeen.toISOString();
       }
     } catch (err) {
       console.error('Error fetching online status for target user:', err);
@@ -601,6 +624,7 @@ io.on('connection', (socket) => {
     if (targetUserId) {
       const uIdStr = targetUserId.toString();
       onlineUsers.delete(uIdStr);
+      userLastPing.delete(uIdStr);
       console.log(`User ${uIdStr} went offline (socket disconnected)`);
 
       const lastSeenDate = new Date();
