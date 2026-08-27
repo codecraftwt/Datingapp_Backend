@@ -113,6 +113,18 @@ const UserSchema = new mongoose.Schema(
     isMobileVerified: { type: Boolean, default: false },
     emailOtp: { type: String },
     emailOtpExpires: { type: Date },
+    warnings: [
+      {
+        _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
+        category: { type: String, required: true },
+        message: { type: String, required: true },
+        severity: { type: String, enum: ['low', 'medium', 'high', 'critical'], default: 'medium' },
+        issuedBy: { type: String, default: 'Admin Moderation Team' },
+        issuedAt: { type: Date, default: Date.now },
+        isAcknowledged: { type: Boolean, default: false },
+        acknowledgedAt: { type: Date },
+      },
+    ],
   },
   {
     // Explicitly target the collection already created by the user

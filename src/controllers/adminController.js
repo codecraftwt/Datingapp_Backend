@@ -434,3 +434,67 @@ exports.updateReportStatus = async (req, res) => {
     });
   }
 };
+
+/**
+ * POST /api/admin/warn-user
+ * Issue Official Warning to a Reported User (Without reporter field requirement)
+ */
+exports.warnUser = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const User = require('../models/User');
+    const { reportedId, category, message, severity } = req.body;
+
+    if (!reportedId || !category || !message) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: reportedId, category, and message are required.',
+      });
+    }
+
+    const user = await User.findById(reportedId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'Reported user not found in database.',
+      });
+    }
+
+    const newWarning = {
+      _id: new mongoose.Types.ObjectId(),
+      category: category.trim(),
+      message: message.trim(),
+      severity: (severity || 'high').toLowerCase(),
+      issuedBy: 'Admin Moderation Team',
+      issuedAt: new Date(),
+      isAcknowledged: false,
+    };
+
+    user.warnings = user.warnings || [];
+    user.warnings.unshift(newWarning);
+    await user.save();
+
+    // Emit live Socket.IO event if reported user is currently online
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        io.to(user._id.toString()).emit('user_warning', newWarning);
+      }
+    } catch (sErr) {
+      console.error('Socket emission error for warning:', sErr);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Official warning issued successfully to ${user.name || user.firstName || 'user'}.`,
+      warning: newWarning,
+    });
+  } catch (error) {
+    console.error('warnUser error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while issuing warning to user.',
+      error: error.message,
+    });
+  }
+};

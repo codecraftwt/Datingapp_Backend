@@ -1677,3 +1677,93 @@ exports.getMyReports = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Server error fetching user reports.' });
   }
 };
+
+/**
+ * GET /api/profile/active-warning
+ * Checks if logged-in user has an active, unacknowledged warning from Admin
+ */
+exports.getActiveWarning = async (req, res) => {
+  try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Unauthorized session.' });
+    }
+
+    const user = await User.findById(req.user._id).select('warnings name firstName email');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    const warnings = user.warnings || [];
+    const activeWarning = warnings.find((w) => w.isAcknowledged === false);
+
+    if (!activeWarning) {
+      return res.status(200).json({
+        success: true,
+        hasWarning: false,
+        warning: null,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      hasWarning: true,
+      warning: {
+        _id: activeWarning._id,
+        category: activeWarning.category,
+        message: activeWarning.message,
+        severity: activeWarning.severity,
+        issuedBy: activeWarning.issuedBy,
+        issuedAt: activeWarning.issuedAt,
+        isAcknowledged: activeWarning.isAcknowledged,
+      },
+    });
+  } catch (error) {
+    console.error('getActiveWarning error:', error);
+    return res.status(500).json({ success: false, message: 'Server error checking active user warning.' });
+  }
+};
+
+/**
+ * POST /api/profile/acknowledge-warning
+ * Reported user acknowledges an official warning from Admin
+ */
+exports.acknowledgeWarning = async (req, res) => {
+  try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, message: 'Unauthorized session.' });
+    }
+
+    const { warningId } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    const warnings = user.warnings || [];
+    let targetWarn = null;
+
+    if (warningId) {
+      targetWarn = warnings.id(warningId) || warnings.find((w) => w._id.toString() === warningId.toString());
+    } else {
+      targetWarn = warnings.find((w) => w.isAcknowledged === false);
+    }
+
+    if (!targetWarn) {
+      return res.status(404).json({ success: false, message: 'Active warning not found.' });
+    }
+
+    targetWarn.isAcknowledged = true;
+    targetWarn.acknowledgedAt = new Date();
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Warning acknowledged successfully.',
+      warning: targetWarn,
+    });
+  } catch (error) {
+    console.error('acknowledgeWarning error:', error);
+    return res.status(500).json({ success: false, message: 'Server error acknowledging warning.' });
+  }
+};

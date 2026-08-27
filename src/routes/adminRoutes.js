@@ -17,4 +17,7 @@ router.get('/reports', adminController.getAllReports);
 // 5. Admin Update User Report Status API Endpoint
 router.put('/reports/:reportId', adminController.updateReportStatus);
 
+// 6. Admin Issue Warning to Reported User API Endpoint
+router.post('/warn-user', adminController.warnUser);
+
 module.exports = router;
