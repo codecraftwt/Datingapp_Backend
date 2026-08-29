@@ -110,6 +110,8 @@ const UserSchema = new mongoose.Schema(
     fcmToken: { type: String, default: null },
     lastSuperLikeDate: { type: Date },
     isFirstLogin: { type: Boolean, default: true },
+    isVerified: { type: Boolean, default: true },
+    isEmailVerified: { type: Boolean, default: true },
     isMobileVerified: { type: Boolean, default: false },
     emailOtp: { type: String },
     emailOtpExpires: { type: Date },

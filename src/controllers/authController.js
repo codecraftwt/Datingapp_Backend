@@ -304,6 +304,8 @@ exports.login = async (req, res) => {
         mobile: user.mobile,
         isLoggedIn: true,
         isOnline: true,
+        isVerified: true,
+        isEmailVerified: true,
         isMobileVerified: isUserVerified,
         isFirstLogin: isUserVerified ? false : (user.isFirstLogin !== false),
         gender: user.gender,
