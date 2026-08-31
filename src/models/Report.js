@@ -27,6 +27,13 @@ const ReportSchema = new mongoose.Schema(
       enum: ['pending', 'reviewed', 'resolved', 'dismissed'],
       default: 'pending',
     },
+    isAcknowledged: {
+      type: Boolean,
+      default: false,
+    },
+    acknowledgedAt: {
+      type: Date,
+    },
   },
   {
     collection: 'Reports',

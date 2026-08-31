@@ -230,9 +230,7 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) inRoom = true;
   }
-  const isOnlineFlag = user.isOnline === true;
-  const recentlyActive = !!(user.lastSeen && (Date.now() - new Date(user.lastSeen).getTime()) < 60 * 1000);
-  return inMap || inRoom || isOnlineFlag || recentlyActive;
+  return inMap || inRoom;
 };
 
     const sortOrder = order === 'asc' ? 1 : -1;
@@ -243,7 +241,7 @@ const checkIsOnline = (user) => {
     const womenCount = await User.countDocuments({ gender: /^women$/i });
 
     let query = User.find(filter)
-      .select('name firstName email mobile gender age orientation interestedIn lookingFor profileImage profileImages fcmToken isLoggedIn isOnline lastSeen createdAt updatedAt')
+      .select('name firstName email mobile gender age orientation interestedIn lookingFor profileImage profileImages fcmToken isLoggedIn isOnline lastSeen createdAt updatedAt warnings')
       .sort(sortObj);
 
     let pageNum = parseInt(page, 10) || 1;
@@ -320,7 +318,7 @@ exports.getAllReports = async (req, res) => {
 
     let query = Report.find(filter)
       .populate('reporterId', 'name firstName email profileImage mobile')
-      .populate('reportedId', 'name firstName email profileImage mobile')
+      .populate('reportedId', 'name firstName email profileImage mobile warnings')
       .sort({ createdAt: -1 });
 
     let pageNum = parseInt(page, 10) || 1;
@@ -331,7 +329,46 @@ exports.getAllReports = async (req, res) => {
     }
 
     const reports = await query.lean();
-    const filteredCount = await Report.countDocuments(filter);
+
+    // Include warned users from User collection if no separate Report document exists
+    try {
+      const warnedUsers = await User.find({ 'warnings.0': { $exists: true } }).lean();
+      for (const u of warnedUsers) {
+        for (const w of (u.warnings || [])) {
+          const uIdStr = u._id.toString();
+          const existingRep = reports.find((r) => {
+            const rId = (r.reportedId?._id || r.reportedId)?.toString();
+            return rId === uIdStr;
+          });
+
+          if (!existingRep) {
+            reports.push({
+              _id: 'rep_' + (w._id || uIdStr),
+              reporterId: { name: 'Admin Moderation Team', email: 'admin@datingapp.com' },
+              reportedId: u,
+              reason: `[${w.category || 'Warning'}] ${w.message || 'Official community warning issued by Admin moderation team.'}`,
+              details: w.isAcknowledged ? 'Report Viewed & Acknowledged' : `Severity: ${(w.severity || 'high').toUpperCase()}`,
+              status: w.isAcknowledged ? 'resolved' : 'reviewed',
+              isAcknowledged: w.isAcknowledged === true,
+              acknowledgedAt: w.acknowledgedAt || null,
+              createdAt: w.issuedAt || u.updatedAt || new Date(),
+            });
+          } else {
+            // Synchronize acknowledgement status onto existing report if user acknowledged
+            if (w.isAcknowledged) {
+              existingRep.isAcknowledged = true;
+              existingRep.acknowledgedAt = w.acknowledgedAt || existingRep.acknowledgedAt || new Date();
+              existingRep.status = 'resolved';
+              existingRep.details = 'Report Viewed & Acknowledged';
+            }
+          }
+        }
+      }
+    } catch (wErr) {
+      console.error('Error combining warned users into getAllReports:', wErr);
+    }
+
+    const filteredCount = reports.length;
 
     return res.status(200).json({
       success: true,
@@ -474,6 +511,19 @@ exports.warnUser = async (req, res) => {
     user.warnings = user.warnings || [];
     user.warnings.unshift(newWarning);
     await user.save();
+
+    // Create Report entry so warning appears in Admin Panel Reports tab
+    try {
+      await Report.create({
+        reporterId: req.user?._id || user._id,
+        reportedId: user._id,
+        reason: `[${category.trim()}] ${message.trim()}`,
+        details: `Severity: ${(severity || 'high').toUpperCase()} | Issued by Admin Moderation Team`,
+        status: 'reviewed',
+      });
+    } catch (rErr) {
+      console.error('Error creating report record for warning:', rErr);
+    }
 
     // Emit live Socket.IO event if reported user is currently online
     try {

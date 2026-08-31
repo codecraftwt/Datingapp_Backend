@@ -37,17 +37,31 @@ const io = new Server(server, {
     origin: '*',
     methods: ['GET', 'POST'],
   },
-  pingTimeout: 30000,
-  pingInterval: 25000,
+  pingTimeout: 7000,
+  pingInterval: 5000,
   transports: ['websocket', 'polling'],
 });
 
 app.set('io', io);
 
+// Disable Express ETag caching so APIs never return 304 Not Modified
+app.set('etag', false);
+
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Pragma', 'Expires'],
+}));
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+  next();
+});
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     return res.status(400).json({ message: 'Invalid JSON format in request body.' });
@@ -107,7 +121,11 @@ if (mongoose.connection.readyState === 0) {
           { isMobileVerified: { $ne: true } },
           { $set: { isEmailVerified: false, isVerified: false } }
         );
-        console.log('Successfully sanitized existing database documents and verification flags.');
+        await User.updateMany(
+          {},
+          { $set: { isOnline: false } }
+        );
+        console.log('Successfully sanitized existing database documents, verification flags, and online status.');
       } catch (cleanErr) {
         console.error('Geo cleanup error:', cleanErr);
       }
@@ -168,13 +186,13 @@ const onlineUsers = new Map();
 const userLastPing = new Map();
 global.onlineUsers = onlineUsers;
 
-// Background Worker: Automatically cleanup stale presence for users whose app was backgrounded/suspended
+// Background Worker: Automatically cleanup stale presence for users whose network disconnected
 setInterval(async () => {
   const now = Date.now();
   for (const [userId, lastPingTime] of userLastPing.entries()) {
-    // If a user hasn't sent a presence ping in > 25 seconds (since pings run every 15s when active)
-    if (now - lastPingTime > 25000) {
-      console.log(`⏰ [STALE PRESENCE CLEANUP] User "${userId}" ping timed out (>25s backgrounded). Marking offline.`);
+    // If a user hasn't sent a presence ping in > 10 seconds (due to network turned off or loss)
+    if (now - lastPingTime > 10000) {
+      console.log(`⏰ [STALE PRESENCE CLEANUP] User "${userId}" ping timed out (>10s network off). Marking offline.`);
       userLastPing.delete(userId);
       onlineUsers.delete(userId);
       const lastSeenDate = new Date(lastPingTime);
@@ -190,7 +208,7 @@ setInterval(async () => {
       });
     }
   }
-}, 10000);
+}, 3000);
 
 // Socket.IO Logic
 io.on('connection', (socket) => {
@@ -380,7 +398,8 @@ io.on('connection', (socket) => {
         fileSize,
         stickerId,
         status: initialStatus,
-        createdAt: createdAt
+        createdAt: createdAt,
+        tempId: tempId || null,
       });
       newMessage.save().catch(err => console.error('Error saving message in background:', err));
 

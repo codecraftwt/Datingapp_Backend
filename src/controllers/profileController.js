@@ -33,11 +33,6 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) return true;
   }
-  if (user.isOnline === true) return true;
-  if (user.lastSeen) {
-    const diff = Date.now() - new Date(user.lastSeen).getTime();
-    if (!isNaN(diff) && diff < 60 * 1000) return true;
-  }
   return false;
 };
 
@@ -1765,6 +1760,37 @@ exports.acknowledgeWarning = async (req, res) => {
     targetWarn.isAcknowledged = true;
     targetWarn.acknowledgedAt = new Date();
     await user.save();
+
+    // Update matching report status in Reports collection to resolved and set isAcknowledged
+    try {
+      const Report = require('../models/Report');
+      const now = new Date();
+      await Report.updateMany(
+        { reportedId: user._id },
+        { 
+          $set: { 
+            status: 'resolved', 
+            isAcknowledged: true,
+            acknowledgedAt: now,
+            details: 'Report Viewed & Acknowledged' 
+          } 
+        }
+      );
+    } catch (repErr) {
+      console.error('Error updating report status on acknowledge:', repErr);
+    }
+
+    // Broadcast warning_acknowledged event to live socket clients / admin listeners
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('warning_acknowledged', {
+          userId: user._id,
+          warningId: targetWarn._id,
+          acknowledgedAt: targetWarn.acknowledgedAt,
+        });
+      }
+    } catch (sErr) {}
 
     return res.status(200).json({
       success: true,

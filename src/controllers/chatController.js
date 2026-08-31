@@ -335,9 +335,33 @@ exports.sendMessage = async (req, res) => {
       return res.status(400).json({ message: 'Message content is required.' });
     }
 
-    const onlineUsers = global.onlineUsers || new Map();
     const rIdStr = receiverId.toString();
     const sIdStr = senderId.toString();
+
+    // Deduplicate: Check if this message was already sent/saved via socket or earlier REST call
+    const dedupeQuery = [];
+    if (tempId) dedupeQuery.push({ tempId: tempId });
+    if (text) {
+      dedupeQuery.push({
+        senderId,
+        receiverId,
+        text: text.trim(),
+        createdAt: { $gte: new Date(Date.now() - 10000) }
+      });
+    }
+
+    if (dedupeQuery.length > 0) {
+      const existingMessage = await Message.findOne({ $or: dedupeQuery });
+      if (existingMessage) {
+        console.log(`[REST sendMessage] Deduplicated duplicate message call for tempId: ${tempId || existingMessage._id}`);
+        return res.status(200).json({
+          message: 'Message sent (deduplicated)',
+          data: existingMessage,
+        });
+      }
+    }
+
+    const onlineUsers = global.onlineUsers || new Map();
     const io = req.app.get('io');
     const isReceiverOnline = onlineUsers.has(rIdStr) || (io && io.sockets.adapter.rooms.has(rIdStr) && io.sockets.adapter.rooms.get(rIdStr).size > 0);
     const initialStatus = isReceiverOnline ? 'delivered' : 'sent';

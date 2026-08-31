@@ -38,6 +38,10 @@ const MessageSchema = new mongoose.Schema(
       enum: ['sent', 'delivered', 'seen'],
       default: 'sent',
     },
+    tempId: {
+      type: String,
+      index: true,
+    },
     isEdited: {
       type: Boolean,
       default: false,
