@@ -402,8 +402,8 @@ exports.advancedSearch = async (req, res) => {
         orientation: user.orientation,
         isOnline: checkIsOnline(user),
         isLoggedIn: checkIsOnline(user),
-        isVerified: user.isVerified ?? user.isEmailVerified ?? true,
-        isEmailVerified: user.isEmailVerified ?? user.isVerified ?? true,
+        isVerified: !!user.isEmailVerified,
+        isEmailVerified: !!user.isEmailVerified,
         isMobileVerified: !!user.isMobileVerified,
         lastSeen: user.lastSeen || user.updatedAt || user.createdAt,
       };

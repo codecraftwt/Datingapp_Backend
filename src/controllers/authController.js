@@ -165,6 +165,9 @@ exports.register = async (req, res) => {
       fcmToken: req.body.fcmToken || null,
       isLoggedIn: false,
       currentToken: null,
+      isEmailVerified: false,
+      isVerified: false,
+      isMobileVerified: false,
       lastSeen: new Date(),
     });
 
@@ -779,6 +782,8 @@ exports.verifyMobileOtp = async (req, res) => {
         $set: {
           mobile: newMobile,
           isMobileVerified: true,
+          isEmailVerified: true,
+          isVerified: true,
           isFirstLogin: false,
         },
         $unset: {

@@ -103,7 +103,11 @@ if (mongoose.connection.readyState === 0) {
           { location: { $exists: true }, 'location.coordinates': { $exists: false } },
           { $unset: { location: 1 } }
         );
-        console.log('Successfully sanitized existing geo-location documents in database.');
+        await User.updateMany(
+          { isMobileVerified: { $ne: true } },
+          { $set: { isEmailVerified: false, isVerified: false } }
+        );
+        console.log('Successfully sanitized existing database documents and verification flags.');
       } catch (cleanErr) {
         console.error('Geo cleanup error:', cleanErr);
       }

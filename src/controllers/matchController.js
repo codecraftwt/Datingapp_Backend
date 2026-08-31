@@ -397,8 +397,8 @@ exports.getLikes = async (req, res) => {
         college: u.college || '',
         isSuperLike: isSuper,
         isOnline: checkIsOnline(u),
-        isVerified: u.isVerified ?? u.isEmailVerified ?? true,
-        isEmailVerified: u.isEmailVerified ?? u.isVerified ?? true,
+        isVerified: !!u.isEmailVerified,
+        isEmailVerified: !!u.isEmailVerified,
         isMobileVerified: !!u.isMobileVerified,
         lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
       };
@@ -503,8 +503,8 @@ exports.getMatches = async (req, res) => {
           job: u.job || '',
           college: u.college || '',
           isOnline: checkIsOnline(u),
-          isVerified: u.isVerified ?? u.isEmailVerified ?? true,
-          isEmailVerified: u.isEmailVerified ?? u.isVerified ?? true,
+          isVerified: !!u.isEmailVerified,
+          isEmailVerified: !!u.isEmailVerified,
           isMobileVerified: !!u.isMobileVerified,
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
