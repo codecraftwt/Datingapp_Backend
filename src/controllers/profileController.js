@@ -643,6 +643,9 @@ exports.getQuestionnaires = async (req, res) => {
           job: u.job || '',
           college: u.college || '',
           isOnline: checkIsOnline(u),
+          isVerified: u.isVerified ?? u.isEmailVerified ?? true,
+          isEmailVerified: u.isEmailVerified ?? u.isVerified ?? true,
+          isMobileVerified: !!u.isMobileVerified,
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
         };
       })
@@ -707,6 +710,9 @@ exports.getProfile = async (req, res) => {
         currentLocation: freshUser.currentLocation,
         isOnline: checkIsOnline(freshUser),
         isLoggedIn: checkIsOnline(freshUser),
+        isVerified: freshUser.isVerified ?? freshUser.isEmailVerified ?? true,
+        isEmailVerified: freshUser.isEmailVerified ?? freshUser.isVerified ?? true,
+        isMobileVerified: !!freshUser.isMobileVerified,
         lastSeen: freshUser.lastSeen || freshUser.updatedAt || freshUser.createdAt,
         fcmToken: freshUser.fcmToken,
       }
@@ -827,6 +833,9 @@ exports.getUserById = async (req, res) => {
         job: targetUser.job || '',
         college: targetUser.college || '',
         isOnline: checkIsOnline(targetUser),
+        isVerified: targetUser.isVerified ?? targetUser.isEmailVerified ?? true,
+        isEmailVerified: targetUser.isEmailVerified ?? targetUser.isVerified ?? true,
+        isMobileVerified: !!targetUser.isMobileVerified,
         lastSeen: targetUser.lastSeen || targetUser.updatedAt || targetUser.createdAt,
       }
     });
