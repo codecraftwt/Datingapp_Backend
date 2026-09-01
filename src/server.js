@@ -190,9 +190,9 @@ global.onlineUsers = onlineUsers;
 setInterval(async () => {
   const now = Date.now();
   for (const [userId, lastPingTime] of userLastPing.entries()) {
-    // If a user hasn't sent a presence ping in > 10 seconds (due to network turned off or loss)
-    if (now - lastPingTime > 10000) {
-      console.log(`⏰ [STALE PRESENCE CLEANUP] User "${userId}" ping timed out (>10s network off). Marking offline.`);
+    // If a user hasn't sent a presence ping in > 30 seconds (due to network turned off or loss)
+    if (now - lastPingTime > 30000) {
+      console.log(`⏰ [STALE PRESENCE CLEANUP] User "${userId}" ping timed out (>30s network off). Marking offline.`);
       userLastPing.delete(userId);
       onlineUsers.delete(userId);
       const lastSeenDate = new Date(lastPingTime);
@@ -208,7 +208,7 @@ setInterval(async () => {
       });
     }
   }
-}, 3000);
+}, 5000);
 
 // Socket.IO Logic
 io.on('connection', (socket) => {
