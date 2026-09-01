@@ -233,8 +233,7 @@ const checkIsOnline = (user) => {
 
   if (inMap || inRoom) return true;
 
-  const isRecent = user.lastSeen ? (Date.now() - new Date(user.lastSeen).getTime() < 60000) : false;
-  return user.isOnline === true && isRecent;
+  return user.isOnline === true;
 };
 
     const sortOrder = order === 'asc' ? 1 : -1;
