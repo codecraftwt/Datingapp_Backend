@@ -230,8 +230,11 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) inRoom = true;
   }
-  const isRecent = user.lastSeen ? (Date.now() - new Date(user.lastSeen).getTime() < 30000) : false;
-  return (inMap || inRoom || user.isOnline === true) && isRecent;
+
+  if (inMap || inRoom) return true;
+
+  const isRecent = user.lastSeen ? (Date.now() - new Date(user.lastSeen).getTime() < 60000) : false;
+  return user.isOnline === true && isRecent;
 };
 
     const sortOrder = order === 'asc' ? 1 : -1;
