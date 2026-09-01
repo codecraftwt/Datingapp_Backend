@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const profileController = require('../controllers/profileController');
+const matchController = require('../controllers/matchController');
 const authController = require('../controllers/authController'); // for DELETE /profile
 const auth = require('../middleware/auth');
 const upload = require('../middleware/upload');
@@ -12,6 +13,8 @@ router.get(['/questionnaire-options', '/questionnarie-options', '/options', '/qu
 router.get('/questionnaire', auth, profileController.getQuestionnaires);
 router.get('/online-users', auth, profileController.getOnlineUsers);
 router.get(['/hidden-media', '/hidden'], auth, profileController.getHiddenMedia);
+router.get(['/blocked-users', '/blocked-users/:userId', '/blocked'], auth, matchController.getBlockedUsers);
+router.post(['/unblock', '/unblock/:userId'], auth, matchController.unblockUser);
 
 router.post(['/upload', '/uploads'], auth, upload.any(), (req, res, next) => {
   if (req.files && req.files.length > 0) {

@@ -604,58 +604,69 @@ exports.unmatchUser = async (req, res) => {
  */
 exports.blockUser = async (req, res) => {
   try {
-    const { targetUserId, reason } = req.body;
-    const currentUserId = req.user._id;
+    const rawTarget = req.body?.targetUserId || req.body?.targetId || req.body?.reportedId || req.body?.userId;
+    const currentUserId = req.user?._id;
 
-    if (!targetUserId) {
-      return res.status(400).json({ message: 'Target user ID is required.' });
+    if (!rawTarget) {
+      return res.status(400).json({ success: false, message: 'Target user ID is required.' });
     }
 
-    if (targetUserId.toString() === currentUserId.toString()) {
-      return res.status(400).json({ message: 'You cannot block yourself.' });
+    const targetUserIdStr = typeof rawTarget === 'object'
+      ? (rawTarget.id || rawTarget._id || rawTarget.userId)?.toString()
+      : rawTarget.toString();
+
+    if (!targetUserIdStr) {
+      return res.status(400).json({ success: false, message: 'Invalid target user ID.' });
+    }
+
+    if (currentUserId && targetUserIdStr === currentUserId.toString()) {
+      return res.status(400).json({ success: false, message: 'You cannot block yourself.' });
     }
 
     console.log('=== /block API Triggered ===');
-    console.log('Blocker:', currentUserId.toString(), 'Blocked:', targetUserId);
+    console.log('Blocker:', currentUserId?.toString(), 'Blocked:', targetUserIdStr);
 
-    // 1. Create or update Block record
-    await Block.findOneAndUpdate(
-      { blockerId: currentUserId, blockedId: targetUserId },
-      { $set: { blockerId: currentUserId, blockedId: targetUserId, reason: reason || '' } },
-      { upsert: true, new: true }
-    );
+    const isValidObjectId = mongoose.Types.ObjectId.isValid(targetUserIdStr);
 
-    // 2. Remove matches between the two users
-    await Match.deleteMany({
-      $or: [
-        { likerId: currentUserId, likedId: targetUserId },
-        { likerId: targetUserId, likedId: currentUserId }
-      ]
-    });
+    if (currentUserId && isValidObjectId) {
+      const targetObjectId = new mongoose.Types.ObjectId(targetUserIdStr);
 
-    // 3. Clear messages between the two users
-    await Message.deleteMany({
-      $or: [
-        { senderId: currentUserId, receiverId: targetUserId },
-        { senderId: targetUserId, receiverId: currentUserId }
-      ]
-    });
+      await Block.findOneAndUpdate(
+        { blockerId: currentUserId, blockedId: targetObjectId },
+        { $set: { blockerId: currentUserId, blockedId: targetObjectId, reason: req.body?.reason || '' } },
+        { upsert: true, new: true }
+      );
 
-    // 4. Notify receiver via Socket if online
+      await Match.deleteMany({
+        $or: [
+          { likerId: currentUserId, likedId: targetObjectId },
+          { likerId: targetObjectId, likedId: currentUserId }
+        ]
+      });
+
+      await Message.deleteMany({
+        $or: [
+          { senderId: currentUserId, receiverId: targetObjectId },
+          { senderId: targetObjectId, receiverId: currentUserId }
+        ]
+      });
+    }
+
     const io = req.app.get('io');
     if (io) {
-      const receiverSocketId = global.onlineUsers ? global.onlineUsers.get(targetUserId.toString()) : null;
+      const receiverSocketId = global.onlineUsers ? global.onlineUsers.get(targetUserIdStr) : null;
       if (receiverSocketId) {
-        io.to(receiverSocketId).emit('user_blocked', { blockedBy: currentUserId.toString() });
+        io.to(receiverSocketId).emit('user_blocked', { blockedBy: currentUserId?.toString() });
       }
     }
 
     return res.status(200).json({
+      success: true,
       message: 'User blocked successfully.'
     });
   } catch (error) {
     console.error('Block user error:', error);
-    return res.status(500).json({ message: 'Server error while blocking user.' });
+    return res.status(500).json({ success: false, message: error.message || 'Server error while blocking user.' });
   }
 };
 
@@ -722,5 +733,113 @@ exports.undoSwipe = async (req, res) => {
   } catch (error) {
     console.error('Undo swipe error:', error);
     return res.status(500).json({ message: 'Server error while undoing swipe.' });
+  }
+};
+
+/**
+ * GET /api/match/blocked-users
+ * GET /api/match/blocked-users/:userId
+ * Fetch the list of users blocked by a specific user (or current logged-in user)
+ */
+exports.getBlockedUsers = async (req, res) => {
+  try {
+    const paramUserId = req.params?.userId || req.query?.userId;
+    let targetUserId = req.user?._id;
+
+    if (paramUserId && paramUserId !== 'me' && paramUserId !== 'self') {
+      if (mongoose.Types.ObjectId.isValid(paramUserId)) {
+        targetUserId = new mongoose.Types.ObjectId(paramUserId);
+      } else {
+        return res.status(400).json({ success: false, message: 'Invalid user ID parameter.' });
+      }
+    }
+
+    if (!targetUserId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    }
+
+    console.log(`[getBlockedUsers] Fetching blocked users for blockerId: ${targetUserId.toString()}`);
+
+    const blocks = await Block.find({ blockerId: targetUserId })
+      .populate('blockedId', 'name firstName email mobile gender age profileImage photos media bio city country createdAt')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const blockedUsers = blocks
+      .filter((b) => b.blockedId)
+      .map((b) => {
+        const u = b.blockedId;
+        return {
+          id: u._id.toString(),
+          _id: u._id.toString(),
+          userId: u._id.toString(),
+          name: u.name || u.firstName || 'User',
+          firstName: u.firstName || u.name || 'User',
+          email: u.email || '',
+          mobile: u.mobile || '',
+          gender: u.gender || '',
+          age: u.age || null,
+          city: u.city || '',
+          country: u.country || '',
+          bio: u.bio || '',
+          profileImage: u.profileImage || (Array.isArray(u.photos) && u.photos[0]) || (Array.isArray(u.media) && u.media[0]) || null,
+          photos: u.photos || [],
+          blockedAt: b.createdAt,
+          blockReason: b.reason || '',
+          blockId: b._id.toString(),
+        };
+      });
+
+    return res.status(200).json({
+      success: true,
+      count: blockedUsers.length,
+      blockedUsers,
+      data: blockedUsers,
+    });
+  } catch (error) {
+    console.error('Error fetching blocked users:', error);
+    return res.status(500).json({ success: false, message: 'Server error while fetching blocked users.' });
+  }
+};
+
+/**
+ * POST /api/match/unblock
+ * POST /api/match/unblock/:userId
+ * Unblock a previously blocked user
+ */
+exports.unblockUser = async (req, res) => {
+  try {
+    const rawTarget = req.body?.targetUserId || req.body?.blockedId || req.body?.targetId || req.params?.userId;
+    const currentUserId = req.user?._id;
+
+    if (!rawTarget) {
+      return res.status(400).json({ success: false, message: 'Target user ID to unblock is required.' });
+    }
+
+    const targetUserIdStr = typeof rawTarget === 'object'
+      ? (rawTarget.id || rawTarget._id || rawTarget.userId)?.toString()
+      : rawTarget.toString();
+
+    if (!targetUserIdStr || !mongoose.Types.ObjectId.isValid(targetUserIdStr)) {
+      return res.status(400).json({ success: false, message: 'Invalid target user ID.' });
+    }
+
+    const targetObjectId = new mongoose.Types.ObjectId(targetUserIdStr);
+
+    const deleteRes = await Block.deleteMany({
+      blockerId: currentUserId,
+      blockedId: targetObjectId,
+    });
+
+    console.log(`[unblockUser] Blocker: ${currentUserId?.toString()} unblocked User: ${targetUserIdStr}. Deleted count: ${deleteRes.deletedCount}`);
+
+    return res.status(200).json({
+      success: true,
+      message: 'User unblocked successfully.',
+      unblockedUserId: targetUserIdStr,
+    });
+  } catch (error) {
+    console.error('Error unblocking user:', error);
+    return res.status(500).json({ success: false, message: 'Server error while unblocking user.' });
   }
 };

@@ -12,6 +12,8 @@ router.post('/reject-like', auth, matchController.rejectLike);
 router.get('/swiped-ids', auth, matchController.getSwipedIds);
 router.post('/unmatch', auth, matchController.unmatchUser);
 router.post('/block', auth, matchController.blockUser);
+router.get(['/blocked-users', '/blocked-users/:userId', '/blocked'], auth, matchController.getBlockedUsers);
+router.post(['/unblock', '/unblock/:userId'], auth, matchController.unblockUser);
 router.post('/report', auth, matchController.reportUser);
 router.post('/undo-swipe', auth, matchController.undoSwipe);
 
