@@ -637,20 +637,6 @@ exports.blockUser = async (req, res) => {
         { $set: { blockerId: currentUserId, blockedId: targetObjectId, reason: req.body?.reason || '' } },
         { upsert: true, new: true }
       );
-
-      await Match.deleteMany({
-        $or: [
-          { likerId: currentUserId, likedId: targetObjectId },
-          { likerId: targetObjectId, likedId: currentUserId }
-        ]
-      });
-
-      await Message.deleteMany({
-        $or: [
-          { senderId: currentUserId, receiverId: targetObjectId },
-          { senderId: targetObjectId, receiverId: currentUserId }
-        ]
-      });
     }
 
     const io = req.app.get('io');
