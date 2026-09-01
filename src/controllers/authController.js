@@ -279,7 +279,7 @@ exports.login = async (req, res) => {
 
     try {
       console.log(`[BACKEND AUTH] Login payload for ${user.email} - fcmToken:`, fcmToken ? (fcmToken.substring(0, 25) + '...') : 'NONE / UNDEFINED');
-      const updateFields = { isLoggedIn: true, isOnline: true, lastSeen: new Date(), currentToken: token };
+      const updateFields = { isLoggedIn: true, isOnline: false, lastSeen: new Date(), currentToken: token };
       if (fcmToken) {
         updateFields.fcmToken = fcmToken;
       }
