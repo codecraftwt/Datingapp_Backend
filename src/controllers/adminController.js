@@ -230,7 +230,8 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) inRoom = true;
   }
-  return inMap || inRoom;
+  const isRecent = user.lastSeen ? (Date.now() - new Date(user.lastSeen).getTime() < 45000) : false;
+  return inMap || inRoom || (user.isOnline === true && isRecent) || (user.isLoggedIn === true && isRecent);
 };
 
     const sortOrder = order === 'asc' ? 1 : -1;
@@ -261,7 +262,7 @@ const checkIsOnline = (user) => {
       return {
         ...u,
         isOnline,
-        isLoggedIn: isOnline,
+        isLoggedIn: u.isLoggedIn !== undefined ? u.isLoggedIn : isOnline,
       };
     });
 
