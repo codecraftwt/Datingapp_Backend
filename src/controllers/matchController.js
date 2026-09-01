@@ -820,18 +820,27 @@ exports.unblockUser = async (req, res) => {
       ? (rawTarget.id || rawTarget._id || rawTarget.userId)?.toString()
       : rawTarget.toString();
 
-    if (!targetUserIdStr || !mongoose.Types.ObjectId.isValid(targetUserIdStr)) {
+    if (!targetUserIdStr) {
       return res.status(400).json({ success: false, message: 'Invalid target user ID.' });
     }
 
-    const targetObjectId = new mongoose.Types.ObjectId(targetUserIdStr);
+    console.log(`[unblockUser] Blocker: ${currentUserId?.toString()} unblocking User: ${targetUserIdStr}`);
 
-    const deleteRes = await Block.deleteMany({
-      blockerId: currentUserId,
-      blockedId: targetObjectId,
-    });
+    const queryOr = [{ blockedId: targetUserIdStr }];
+    if (mongoose.Types.ObjectId.isValid(targetUserIdStr)) {
+      queryOr.push({ blockedId: new mongoose.Types.ObjectId(targetUserIdStr) });
+    }
 
-    console.log(`[unblockUser] Blocker: ${currentUserId?.toString()} unblocked User: ${targetUserIdStr}. Deleted count: ${deleteRes.deletedCount}`);
+    const deleteQuery = {
+      $or: queryOr
+    };
+
+    if (currentUserId) {
+      deleteQuery.blockerId = currentUserId;
+    }
+
+    const deleteRes = await Block.deleteMany(deleteQuery);
+    console.log(`[unblockUser] Successfully unblocked ${targetUserIdStr}. Deleted count: ${deleteRes.deletedCount}`);
 
     return res.status(200).json({
       success: true,
@@ -840,6 +849,6 @@ exports.unblockUser = async (req, res) => {
     });
   } catch (error) {
     console.error('Error unblocking user:', error);
-    return res.status(500).json({ success: false, message: 'Server error while unblocking user.' });
+    return res.status(500).json({ success: false, message: error.message || 'Server error while unblocking user.' });
   }
 };
