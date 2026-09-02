@@ -117,9 +117,10 @@ exports.advancedSearch = async (req, res) => {
       b.blockerId.toString() === req.user._id.toString() ? b.blockedId : b.blockerId
     );
 
-    // Build MongoDB Query (Exclude current user and blocked profiles)
+    // Build MongoDB Query (Exclude current user, blocked profiles, and hidden profiles)
     const mongoQuery = {
       _id: { $ne: req.user._id, $nin: blockedIds },
+      isProfileHidden: { $ne: true },
     };
 
     // Text Search (Name, Profession, College, Bio, Location)

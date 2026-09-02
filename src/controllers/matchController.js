@@ -662,9 +662,13 @@ exports.blockUser = async (req, res) => {
  */
 exports.reportUser = async (req, res) => {
   try {
-    const { reportedId, targetUserId, reportedUserId, reason, details } = req.body;
-    const currentUserId = req.user._id;
+    const { reportedId, targetUserId, reportedUserId, reason, details } = req.body || {};
+    const currentUserId = req.user?._id;
     const targetId = reportedId || targetUserId || reportedUserId;
+
+    if (!currentUserId) {
+      return res.status(401).json({ message: 'Unauthorized. User authentication required.' });
+    }
 
     if (!targetId) {
       return res.status(400).json({ message: 'Reported user ID is required.' });
@@ -701,8 +705,12 @@ exports.reportUser = async (req, res) => {
  */
 exports.undoSwipe = async (req, res) => {
   try {
-    const { targetUserId } = req.body;
-    const currentUserId = req.user._id;
+    const { targetUserId } = req.body || {};
+    const currentUserId = req.user?._id;
+
+    if (!currentUserId) {
+      return res.status(401).json({ message: 'Unauthorized.' });
+    }
 
     if (!targetUserId) {
       return res.status(400).json({ message: 'Target user ID is required.' });

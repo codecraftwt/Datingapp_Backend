@@ -103,6 +103,7 @@ const UserSchema = new mongoose.Schema(
     bio: { type: String, trim: true },
     isLoggedIn: { type: Boolean, default: false },
     isOnline: { type: Boolean, default: false },
+    isProfileHidden: { type: Boolean, default: false },
     currentToken: { type: String, default: null },
     lastSeen: { type: Date },
     resetPasswordToken: { type: String },

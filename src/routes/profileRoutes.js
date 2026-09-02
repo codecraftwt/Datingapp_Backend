@@ -6,6 +6,7 @@ const authController = require('../controllers/authController'); // for DELETE /
 const auth = require('../middleware/auth');
 const upload = require('../middleware/upload');
 
+router.put(['/visibility', '/hide-profile', '/show-profile'], auth, profileController.updateProfileVisibility);
 router.put('/questionnaire', auth, profileController.saveQuestionnaire);
 router.put('/location', auth, profileController.updateLocation);
 router.delete('/location', auth, profileController.clearCurrentLocation);

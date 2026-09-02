@@ -432,7 +432,8 @@ exports.getQuestionnaires = async (req, res) => {
     // Build Mongo Query Object based on Gender Preference
     const mongoQuery = {
       _id: { $ne: req.user._id, $nin: blockedIds },
-      firstName: { $exists: true, $ne: null }
+      firstName: { $exists: true, $ne: null },
+      isProfileHidden: { $ne: true }
     };
 
     if (userInterestedIn === 'Women' || userInterestedIn === 'Female') {
@@ -705,6 +706,7 @@ exports.getProfile = async (req, res) => {
         currentLocation: freshUser.currentLocation,
         isOnline: checkIsOnline(freshUser),
         isLoggedIn: checkIsOnline(freshUser),
+        isProfileHidden: !!freshUser.isProfileHidden,
         isVerified: !!freshUser.isEmailVerified,
         isEmailVerified: !!freshUser.isEmailVerified,
         isMobileVerified: !!freshUser.isMobileVerified,
@@ -1800,5 +1802,44 @@ exports.acknowledgeWarning = async (req, res) => {
   } catch (error) {
     console.error('acknowledgeWarning error:', error);
     return res.status(500).json({ success: false, message: 'Server error acknowledging warning.' });
+  }
+};
+
+/**
+ * PUT /api/profile/visibility
+ * Toggle or set Profile Visibility (Hide My Profile from discovery / Show My Profile)
+ */
+exports.updateProfileVisibility = async (req, res) => {
+  try {
+    const { isProfileHidden, isHidden } = req.body || {};
+    const hideVal = isProfileHidden !== undefined ? !!isProfileHidden : (isHidden !== undefined ? !!isHidden : true);
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { $set: { isProfileHidden: hideVal } },
+      { new: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    console.log(`[updateProfileVisibility] User ${req.user._id} updated isProfileHidden to: ${hideVal}`);
+
+    return res.status(200).json({
+      success: true,
+      message: hideVal
+        ? 'Your profile is now hidden. It will not be shown to other users in candidate discovery or search.'
+        : 'Your profile is now visible to other users in candidate discovery and search.',
+      isProfileHidden: updatedUser.isProfileHidden,
+      user: {
+        id: updatedUser._id,
+        _id: updatedUser._id,
+        isProfileHidden: updatedUser.isProfileHidden,
+      },
+    });
+  } catch (error) {
+    console.error('Error updating profile visibility:', error);
+    return res.status(500).json({ success: false, message: 'Server error while updating profile visibility.' });
   }
 };

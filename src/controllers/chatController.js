@@ -1,9 +1,11 @@
 const Message = require('../models/Message');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const Block = require('../models/Block');
 const { sendPushNotification } = require('../services/pushNotificationService');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
+const path = require('path');
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dwwykeft2',
@@ -245,32 +247,40 @@ exports.uploadChatMedia = async (req, res) => {
     let size = file?.size || 0;
 
     const doCloudinaryUpload = async (inputData) => {
+      let resourceType = 'auto';
+      if (file && file.mimetype) {
+        if (file.mimetype.startsWith('video/') || file.mimetype.startsWith('audio/')) {
+          resourceType = 'video';
+        } else if (!file.mimetype.startsWith('image/')) {
+          resourceType = 'raw';
+        }
+      } else if (file && file.originalname) {
+        const lowerName = file.originalname.toLowerCase();
+        if (/\.(mp3|m4a|aac|wav|ogg|3gp|mp4|mov|webm)$/.test(lowerName)) {
+          resourceType = 'video';
+        }
+      }
+
       try {
-        console.log('Chat Media: Uploading to Cloudinary unsigned preset Dating_Profiles...');
-        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles');
+        console.log(`Chat Media: Uploading to Cloudinary with resource_type='${resourceType}'...`);
+        const cloudRes = await cloudinary.uploader.upload(inputData, {
+          folder: 'dating_app_chat_media',
+          resource_type: resourceType,
+        });
         if (cloudRes && cloudRes.secure_url) {
           return cloudRes.secure_url;
         }
       } catch (err1) {
-        console.warn('Chat Media unsigned_upload failed, trying signed upload:', err1.message || err1);
+        console.warn('Chat Media signed upload failed, trying unsigned upload:', err1.message || err1);
         try {
-          let resourceType = 'auto';
-          if (file && file.mimetype) {
-            if (file.mimetype.startsWith('video/') || file.mimetype.startsWith('audio/')) {
-              resourceType = 'video';
-            } else if (!file.mimetype.startsWith('image/')) {
-              resourceType = 'raw';
-            }
-          }
-          const cloudRes = await cloudinary.uploader.upload(inputData, {
-            folder: 'dating_app_chat_media',
+          const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', {
             resource_type: resourceType,
           });
           if (cloudRes && cloudRes.secure_url) {
             return cloudRes.secure_url;
           }
         } catch (err2) {
-          console.warn('Chat Media signed upload failed:', err2.message || err2);
+          console.warn('Chat Media unsigned_upload failed:', err2.message || err2);
         }
       }
       return null;
@@ -337,6 +347,16 @@ exports.sendMessage = async (req, res) => {
 
     const rIdStr = receiverId.toString();
     const sIdStr = senderId.toString();
+
+    // Check if receiver has blocked sender
+    const isBlockedByReceiver = await Block.findOne({
+      blockerId: receiverId,
+      blockedId: senderId,
+    });
+
+    if (isBlockedByReceiver) {
+      return res.status(403).json({ message: 'You cannot send messages to this user because you are blocked.' });
+    }
 
     // Deduplicate: Check if this message was already sent/saved via socket or earlier REST call
     const dedupeQuery = [];

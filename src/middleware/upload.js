@@ -44,7 +44,12 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || '') || (file.mimetype?.startsWith('video/') ? '.mp4' : '.jpg');
+    let ext = path.extname(file.originalname || '');
+    if (!ext) {
+      if (file.mimetype?.startsWith('video/')) ext = '.mp4';
+      else if (file.mimetype?.startsWith('audio/')) ext = '.m4a';
+      else ext = '.jpg';
+    }
     const uniqueName = `upload_${Date.now()}_${Math.round(Math.random() * 1e9)}${ext}`;
     cb(null, uniqueName);
   },

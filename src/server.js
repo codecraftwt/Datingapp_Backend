@@ -344,6 +344,20 @@ io.on('connection', (socket) => {
       const sIdStr = senderId.toString();
       const rIdStr = receiverId.toString();
 
+      // Check if receiver has blocked the sender
+      const isBlockedByReceiver = await Block.findOne({
+        blockerId: receiverId,
+        blockedId: senderId,
+      });
+
+      if (isBlockedByReceiver) {
+        console.log(`Socket: Message blocked. Sender ${sIdStr} is blocked by receiver ${rIdStr}`);
+        if (ack) {
+          ack({ status: 'error', message: 'You cannot send messages to this user because you are blocked.' });
+        }
+        return;
+      }
+
       const isReceiverOnline = onlineUsers.has(rIdStr) || (io.sockets.adapter.rooms.has(rIdStr) && io.sockets.adapter.rooms.get(rIdStr).size > 0);
       const initialStatus = isReceiverOnline ? 'delivered' : 'sent';
       const msgId = new mongoose.Types.ObjectId();
