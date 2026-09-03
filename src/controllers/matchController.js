@@ -18,6 +18,8 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) return true;
   }
+  if (user.isOnline === true) return true;
+  if (user.isLoggedIn === true && user.lastSeen && (Date.now() - new Date(user.lastSeen).getTime() < 300000)) return true;
   return false;
 };
 
@@ -639,12 +641,14 @@ exports.blockUser = async (req, res) => {
       );
     }
 
-    const io = req.app.get('io');
+    const io = req.app.get('io') || global.io;
     if (io) {
       const receiverSocketId = global.onlineUsers ? global.onlineUsers.get(targetUserIdStr) : null;
       if (receiverSocketId) {
         io.to(receiverSocketId).emit('user_blocked', { blockedBy: currentUserId?.toString() });
+        io.to(receiverSocketId).emit('user_blocked_by_other', { blockerId: currentUserId?.toString() });
       }
+      io.emit('user_blocked_by_other', { blockerId: currentUserId?.toString(), targetUserId: targetUserIdStr });
     }
 
     return res.status(200).json({
@@ -760,6 +764,12 @@ exports.getBlockedUsers = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
+    const blockedMe = await Block.find({ blockedId: targetUserId })
+      .select('blockerId')
+      .lean();
+
+    const blockedByOtherUserIds = blockedMe.map((b) => (b.blockerId?._id || b.blockerId)?.toString()).filter(Boolean);
+
     const blockedUsers = blocks
       .filter((b) => b.blockedId)
       .map((b) => {
@@ -790,6 +800,7 @@ exports.getBlockedUsers = async (req, res) => {
       count: blockedUsers.length,
       blockedUsers,
       data: blockedUsers,
+      blockedByOtherUserIds,
     });
   } catch (error) {
     console.error('Error fetching blocked users:', error);
@@ -836,6 +847,11 @@ exports.unblockUser = async (req, res) => {
 
     const deleteRes = await Block.deleteMany(deleteQuery);
     console.log(`[unblockUser] Successfully unblocked ${targetUserIdStr}. Deleted count: ${deleteRes.deletedCount}`);
+
+    const io = req.app.get('io') || global.io;
+    if (io) {
+      io.emit('user_unblocked_by_other', { blockerId: currentUserId?.toString(), targetUserId: targetUserIdStr });
+    }
 
     return res.status(200).json({
       success: true,

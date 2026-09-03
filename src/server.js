@@ -121,11 +121,7 @@ if (mongoose.connection.readyState === 0) {
           { isMobileVerified: { $ne: true } },
           { $set: { isEmailVerified: false, isVerified: false } }
         );
-        await User.updateMany(
-          {},
-          { $set: { isOnline: false } }
-        );
-        console.log('Successfully sanitized existing database documents, verification flags, and online status.');
+        console.log('Successfully sanitized existing database documents and verification flags.');
       } catch (cleanErr) {
         console.error('Geo cleanup error:', cleanErr);
       }
@@ -134,6 +130,8 @@ if (mongoose.connection.readyState === 0) {
 }
 
 // Routes
+const auth = require('./middleware/auth');
+const profileController = require('./controllers/profileController');
 const authRoutes = require('./routes/authRoutes');
 const profileRoutes = require('./routes/profileRoutes');
 const chatRoutes = require('./routes/chatRoutes');
@@ -142,6 +140,17 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const searchRoutes = require('./routes/searchRoutes');
 const questionnaireRoutes = require('./routes/questionnaireRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+
+// URL Normalization Middleware (fixes double slashes and trailing slashes causing 404s)
+app.use((req, res, next) => {
+  if (req.url && req.url.includes('//')) {
+    req.url = req.url.replace(/\/+/g, '/');
+  }
+  if (req.url && req.url.length > 1 && req.url.endsWith('/')) {
+    req.url = req.url.slice(0, -1);
+  }
+  next();
+});
 
 app.use('/api/auth', authRoutes);
 app.use(['/api/profile', '/api/profil'], profileRoutes);
@@ -153,6 +162,11 @@ app.use('/api/user', matchRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/admin', adminRoutes);
+
+// Direct Global Presence Endpoint Fallback
+app.all(['/api/profile/presence', '/api/presence', '/api/user/presence', '/api/auth/presence', '/presence'], auth, (req, res, next) => {
+  return profileController.updatePresence(req, res, next);
+});
 
 // Health Check Routes
 app.get(['/', '/health', '/api/health'], (req, res) => {

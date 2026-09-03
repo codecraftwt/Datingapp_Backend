@@ -230,7 +230,9 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) inRoom = true;
   }
-  return inMap || inRoom;
+  const isDbOnline = user.isOnline === true;
+  const isUserLoggedIn = user.isLoggedIn === true;
+  return inMap || inRoom || isDbOnline || isUserLoggedIn;
 };
 
     const sortOrder = order === 'asc' ? 1 : -1;

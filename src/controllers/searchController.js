@@ -20,6 +20,8 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) return true;
   }
+  if (user.isOnline === true) return true;
+  if (user.isLoggedIn === true && user.lastSeen && (Date.now() - new Date(user.lastSeen).getTime() < 300000)) return true;
   return false;
 };
 

@@ -75,7 +75,31 @@ exports.getChatMessages = async (req, res) => {
       ]
     }).sort({ createdAt: 1 });
 
-    return res.status(200).json(messages);
+    const selObjectId = mongoose.Types.ObjectId.isValid(selectedUserId) ? new mongoose.Types.ObjectId(selectedUserId) : selectedUserId;
+
+    const blockByMe = await Block.findOne({
+      $or: [
+        { blockerId: currentUserId, blockedId: selObjectId },
+        { blockerId: currentUserId.toString(), blockedId: selectedUserId.toString() },
+      ],
+    });
+
+    const blockByOther = await Block.findOne({
+      $or: [
+        { blockerId: selObjectId, blockedId: currentUserId },
+        { blockerId: selectedUserId.toString(), blockedId: currentUserId.toString() },
+      ],
+    });
+
+    const isBlockedByMe = !!blockByMe;
+    const isBlockedByOther = !!blockByOther;
+
+    return res.status(200).json({
+      success: true,
+      messages,
+      isBlockedByMe,
+      isBlockedByOther,
+    });
   } catch (error) {
     console.error('Fetch messages with user error:', error);
     return res.status(500).json({ message: 'Server error while fetching messages.' });
@@ -261,26 +285,30 @@ exports.uploadChatMedia = async (req, res) => {
         }
       }
 
-      try {
-        console.log(`Chat Media: Uploading to Cloudinary with resource_type='${resourceType}'...`);
-        const cloudRes = await cloudinary.uploader.upload(inputData, {
-          folder: 'dating_app_chat_media',
-          resource_type: resourceType,
-        });
-        if (cloudRes && cloudRes.secure_url) {
-          return cloudRes.secure_url;
-        }
-      } catch (err1) {
-        console.warn('Chat Media signed upload failed, trying unsigned upload:', err1.message || err1);
+      const typesToTry = [resourceType, 'auto', 'raw'].filter((v, idx, arr) => arr.indexOf(v) === idx);
+
+      for (const resType of typesToTry) {
         try {
-          const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', {
-            resource_type: resourceType,
+          console.log(`Chat Media: Uploading to Cloudinary with resource_type='${resType}'...`);
+          const cloudRes = await cloudinary.uploader.upload(inputData, {
+            folder: 'dating_app_chat_media',
+            resource_type: resType,
           });
           if (cloudRes && cloudRes.secure_url) {
             return cloudRes.secure_url;
           }
-        } catch (err2) {
-          console.warn('Chat Media unsigned_upload failed:', err2.message || err2);
+        } catch (err1) {
+          console.warn(`Chat Media signed upload (${resType}) failed:`, err1.message || err1);
+          try {
+            const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', {
+              resource_type: resType,
+            });
+            if (cloudRes && cloudRes.secure_url) {
+              return cloudRes.secure_url;
+            }
+          } catch (err2) {
+            console.warn(`Chat Media unsigned_upload (${resType}) failed:`, err2.message || err2);
+          }
         }
       }
       return null;
@@ -291,7 +319,7 @@ exports.uploadChatMedia = async (req, res) => {
       if (!mediaUrl) {
         const filename = path.basename(file.path);
         const protocol = req.protocol || 'http';
-        const host = req.get('host') || 'localhost:5000';
+        let host = req.get('host') || 'localhost:5000';
         mediaUrl = `${protocol}://${host}/uploads/${filename}`;
         console.log('[uploadChatMedia] Using local /uploads/ fallback URL:', mediaUrl);
       } else {

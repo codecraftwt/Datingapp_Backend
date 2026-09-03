@@ -33,6 +33,8 @@ const checkIsOnline = (user) => {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) return true;
   }
+  if (user.isOnline === true) return true;
+  if (user.isLoggedIn === true && user.lastSeen && (Date.now() - new Date(user.lastSeen).getTime() < 300000)) return true;
   return false;
 };
 
@@ -704,8 +706,8 @@ exports.getProfile = async (req, res) => {
         bio: freshUser.bio || '',
         permanentAddress: freshUser.permanentAddress,
         currentLocation: freshUser.currentLocation,
-        isOnline: checkIsOnline(freshUser),
-        isLoggedIn: checkIsOnline(freshUser),
+        isOnline: true,
+        isLoggedIn: true,
         isProfileHidden: !!freshUser.isProfileHidden,
         isVerified: !!freshUser.isEmailVerified,
         isEmailVerified: !!freshUser.isEmailVerified,
@@ -881,7 +883,7 @@ exports.getOnlineUsers = async (req, res) => {
           distance: distanceText,
           bio: u.bio || '',
           interests: u.interests && u.interests.length > 0 ? u.interests : ['☕ Coffee lover'],
-          image: u.profileImage || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=600',
+          image: u.profileImage || null,
           gender: u.gender,
           orientation: u.orientation || 'Straight',
           lookingFor: u.lookingFor || 'Long-term partner',
@@ -901,6 +903,99 @@ exports.getOnlineUsers = async (req, res) => {
   } catch (error) {
     console.error('Fetch online users error:', error);
     return res.status(500).json({ message: 'Server error while fetching online users.' });
+  }
+};
+
+/**
+ * Dedicated API: Heartbeat ping to maintain current user's Online status
+ * POST /api/profile/presence
+ */
+exports.updatePresence = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const now = new Date();
+    const uIdStr = userId.toString();
+
+    if (global.onlineUsers) {
+      global.onlineUsers.set(uIdStr, true);
+    }
+    await User.findByIdAndUpdate(userId, { isLoggedIn: true, isOnline: true, lastSeen: now });
+
+    if (global.io) {
+      global.io.emit('user_status', { userId: uIdStr, status: 'online', isOnline: true });
+    }
+
+    return res.status(200).json({ success: true, isOnline: true, lastSeen: now });
+  } catch (error) {
+    console.error('Error updating presence:', error);
+    return res.status(500).json({ success: false, message: 'Server error updating presence.' });
+  }
+};
+
+/**
+ * Dedicated API: Fetch online status map of all active users
+ * GET /api/profile/online-status
+ */
+exports.getOnlineStatusMap = async (req, res) => {
+  try {
+    const activeSocketIds = global.onlineUsers ? Array.from(global.onlineUsers.keys()) : [];
+    
+    // Fetch users whose isOnline is true or lastSeen within last 5 minutes
+    const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const dbOnlineUsers = await User.find({
+      $or: [
+        { _id: { $in: activeSocketIds } },
+        { isOnline: true },
+        { isLoggedIn: true, lastSeen: { $gte: fiveMinsAgo } }
+      ]
+    }).select('_id isOnline lastSeen');
+
+    const onlineMap = {};
+    const onlineUserIds = [];
+
+    dbOnlineUsers.forEach(u => {
+      const idStr = u._id.toString();
+      onlineMap[idStr] = true;
+      onlineUserIds.push(idStr);
+    });
+
+    activeSocketIds.forEach(idStr => {
+      onlineMap[idStr] = true;
+      if (!onlineUserIds.includes(idStr)) onlineUserIds.push(idStr);
+    });
+
+    return res.status(200).json({
+      success: true,
+      onlineUserIds,
+      onlineMap
+    });
+  } catch (error) {
+    console.error('Error fetching online status map:', error);
+    return res.status(500).json({ success: false, message: 'Server error fetching online status map.' });
+  }
+};
+
+/**
+ * Dedicated API: Fetch online status for a specific user ID
+ * GET /api/profile/online-status/:userId
+ */
+exports.getUserOnlineStatus = async (req, res) => {
+  try {
+    const targetUserId = req.params.userId;
+    if (!targetUserId) return res.status(400).json({ message: 'Missing userId parameter' });
+
+    const targetUser = await User.findById(targetUserId).select('isOnline lastSeen isLoggedIn');
+    const isOnline = checkIsOnline(targetUser);
+
+    return res.status(200).json({
+      success: true,
+      userId: targetUserId,
+      isOnline,
+      lastSeen: targetUser?.lastSeen || null
+    });
+  } catch (error) {
+    console.error('Error fetching user online status:', error);
+    return res.status(500).json({ success: false, message: 'Server error.' });
   }
 };
 
