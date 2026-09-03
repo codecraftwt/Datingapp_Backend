@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Message = require('../models/Message');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
@@ -39,17 +40,28 @@ exports.getMessages = async (req, res) => {
  */
 exports.getChatMessages = async (req, res) => {
   try {
-    const currentUserId = req.user._id;
+    const currentUserId = req.user?._id;
     const { selectedUserId } = req.params;
+
+    if (!selectedUserId || selectedUserId === 'undefined' || selectedUserId === 'null' || !mongoose.Types.ObjectId.isValid(selectedUserId)) {
+      return res.status(200).json({
+        success: true,
+        messages: [],
+        isBlockedByMe: false,
+        isBlockedByOther: false,
+      });
+    }
+
+    const selObjectId = new mongoose.Types.ObjectId(selectedUserId);
 
     // Automatically mark all unread chat notifications & messages from this sender as read/seen
     Notification.updateMany(
-      { recipient: currentUserId, sender: selectedUserId, type: 'chat', isRead: false },
+      { recipient: currentUserId, sender: selObjectId, type: 'chat', isRead: false },
       { isRead: true }
     ).catch(() => {});
 
     Message.updateMany(
-      { senderId: selectedUserId, receiverId: currentUserId, status: { $ne: 'seen' } },
+      { senderId: selObjectId, receiverId: currentUserId, status: { $ne: 'seen' } },
       { status: 'seen' }
     ).then((resUpdate) => {
       if (resUpdate && resUpdate.modifiedCount > 0) {
@@ -70,12 +82,10 @@ exports.getChatMessages = async (req, res) => {
 
     const messages = await Message.find({
       $or: [
-        { senderId: currentUserId, receiverId: selectedUserId, deletedBySender: { $ne: true } },
-        { senderId: selectedUserId, receiverId: currentUserId, deletedByReceiver: { $ne: true } }
+        { senderId: currentUserId, receiverId: selObjectId, deletedBySender: { $ne: true } },
+        { senderId: selObjectId, receiverId: currentUserId, deletedByReceiver: { $ne: true } }
       ]
     }).sort({ createdAt: 1 });
-
-    const selObjectId = mongoose.Types.ObjectId.isValid(selectedUserId) ? new mongoose.Types.ObjectId(selectedUserId) : selectedUserId;
 
     const blockByMe = await Block.findOne({
       $or: [
