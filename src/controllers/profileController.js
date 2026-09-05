@@ -180,7 +180,7 @@ exports.saveQuestionnaire = async (req, res) => {
       distanceRange,
       profileImage: finalProfileImage,
       profileImages: finalProfileImages,
-      photos: detectedPhotos.length > 0 ? detectedPhotos : finalProfileImages,
+      photos: finalProfileImages,
       videos: detectedVideos,
       media: finalProfileImages,
       bio,
@@ -1367,25 +1367,52 @@ exports.uploadMainPhoto = async (req, res) => {
     let imageUrl = req.body?.imageUrl || req.body?.photo || req.body?.url;
 
     if (file && file.path) {
+      const isVid = isBackendVideoUrl(file.path) || (file.mimetype && file.mimetype.startsWith('video/'));
+      const resType = isVid ? 'video' : 'auto';
+      const uploadOpts = { folder: 'dating_app_profiles', resource_type: resType };
+      if (isVid) {
+        uploadOpts.transformation = [{ start_offset: '0', end_offset: '15' }];
+      }
+
       try {
-        const cloudRes = await cloudinary.uploader.unsigned_upload(file.path, 'Dating_Profiles', { resource_type: 'image' });
+        const cloudRes = await cloudinary.uploader.unsigned_upload(file.path, 'Dating_Profiles', uploadOpts);
         if (cloudRes && cloudRes.secure_url) imageUrl = cloudRes.secure_url;
       } catch (cErr) {
-        const signedRes = await cloudinary.uploader.upload(file.path, { folder: 'dating_app_profiles' });
+        const signedRes = await cloudinary.uploader.upload(file.path, uploadOpts);
         if (signedRes && signedRes.secure_url) imageUrl = signedRes.secure_url;
       }
     }
 
     if (!imageUrl) {
-      return res.status(400).json({ success: false, message: 'No valid image file or URL provided for main profile photo.' });
+      return res.status(400).json({ success: false, message: 'No valid image or video file provided for main profile image.' });
     }
 
     const currentUser = await User.findById(req.user._id);
+
     const updatedProfileImages = Array.isArray(currentUser?.profileImages) ? [...currentUser.profileImages] : [];
     if (updatedProfileImages.length > 0) {
       updatedProfileImages[0] = imageUrl;
     } else {
       updatedProfileImages.push(imageUrl);
+    }
+
+    const updatedPhotos = Array.isArray(currentUser?.photos) ? [...currentUser.photos] : [];
+    if (updatedPhotos.length > 0) {
+      updatedPhotos[0] = imageUrl;
+    } else {
+      updatedPhotos.push(imageUrl);
+    }
+
+    const updatedMedia = Array.isArray(currentUser?.media) ? [...currentUser.media] : [];
+    if (updatedMedia.length > 0) {
+      updatedMedia[0] = imageUrl;
+    } else {
+      updatedMedia.push(imageUrl);
+    }
+
+    const updatedVideos = Array.isArray(currentUser?.videos) ? [...currentUser.videos] : [];
+    if (isBackendVideoUrl(imageUrl) && !updatedVideos.includes(imageUrl)) {
+      updatedVideos.push(imageUrl);
     }
 
     const updatedUser = await User.findByIdAndUpdate(
@@ -1394,6 +1421,9 @@ exports.uploadMainPhoto = async (req, res) => {
         $set: {
           profileImage: imageUrl,
           profileImages: updatedProfileImages,
+          photos: updatedPhotos,
+          media: updatedMedia,
+          videos: updatedVideos,
         },
       },
       { new: true }
@@ -1401,13 +1431,13 @@ exports.uploadMainPhoto = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message: 'Main profile photo updated successfully',
+      message: 'Main profile image/video updated successfully',
       profileImage: imageUrl,
       user: updatedUser,
     });
   } catch (error) {
     console.error('uploadMainPhoto error:', error);
-    return res.status(500).json({ success: false, message: 'Server error updating main profile photo.' });
+    return res.status(500).json({ success: false, message: 'Server error updating main profile image.' });
   }
 };
 
@@ -1513,8 +1543,11 @@ exports.uploadGalleryMedia = async (req, res) => {
     const mediaArr = Array.isArray(currentUser.media) ? [...currentUser.media] : [];
     mediaArr[slotIndex] = mediaUrl;
 
+    const profileImagesArr = Array.isArray(currentUser.profileImages) ? [...currentUser.profileImages] : [];
+    profileImagesArr[slotIndex] = mediaUrl;
+
     const videosArr = Array.isArray(currentUser.videos) ? [...currentUser.videos] : [];
-    if (mediaUrl.includes('video') || /\.(mp4|mov|webm)($|\?)/i.test(mediaUrl)) {
+    if (isBackendVideoUrl(mediaUrl)) {
       if (!videosArr.includes(mediaUrl)) {
         videosArr.push(mediaUrl);
       }
@@ -1525,6 +1558,7 @@ exports.uploadGalleryMedia = async (req, res) => {
       {
         $set: {
           photos: photosArr,
+          profileImages: profileImagesArr,
           media: mediaArr,
           videos: videosArr,
         },

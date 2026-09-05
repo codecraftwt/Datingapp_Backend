@@ -74,8 +74,16 @@ exports.register = async (req, res) => {
       tempLongitude,
     } = req.body;
 
+    await ensureDbConnection();
+
     if (!name || !email || !mobile || !password || !confirmPassword || !gender) {
       return res.status(400).json({ message: 'All basic fields are required.' });
+    }
+
+    let cleanEmail = email.trim().toLowerCase();
+    // Auto-correct common TLD typo .con -> .com (e.g. yopmail.con -> yopmail.com, gmail.con -> gmail.com)
+    if (cleanEmail.endsWith('.con')) {
+      cleanEmail = cleanEmail.slice(0, -4) + '.com';
     }
 
     if (!country || !state || !district || !city) {
@@ -100,12 +108,18 @@ exports.register = async (req, res) => {
       return res.status(400).json({ message: 'Gender must be Male, Women, Female, or Non-binary.' });
     }
 
-    const existingUser = await User.findOne({ email });
+    const safeRegexEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const existingUser = await User.findOne({
+      $or: [
+        { email: cleanEmail },
+        { email: { $regex: new RegExp(`^${safeRegexEmail}$`, 'i') } }
+      ]
+    });
     if (existingUser) {
       return res.status(400).json({ message: 'User already exists with this email.' });
     }
 
-    const existingMobile = await User.findOne({ mobile });
+    const existingMobile = await User.findOne({ mobile: mobile.trim() });
     if (existingMobile) {
       return res.status(400).json({ message: 'User already exists with this mobile number.' });
     }
@@ -154,9 +168,9 @@ exports.register = async (req, res) => {
     }
 
     const newUser = new User({
-      name,
-      email,
-      mobile,
+      name: name.trim(),
+      email: cleanEmail,
+      mobile: mobile.trim(),
       password: hashedPassword,
       gender,
       permanentAddress: permanentAddressObj,
@@ -390,8 +404,18 @@ exports.forgotPassword = async (req, res) => {
       return res.status(400).json({ message: 'Email is required.' });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
-    const user = await User.findOne({ email: cleanEmail });
+    let cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail.endsWith('.con')) {
+      cleanEmail = cleanEmail.slice(0, -4) + '.com';
+    }
+
+    const safeRegexEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const user = await User.findOne({
+      $or: [
+        { email: cleanEmail },
+        { email: { $regex: new RegExp(`^${safeRegexEmail}$`, 'i') } }
+      ]
+    });
     if (!user) {
       return res.status(404).json({ message: 'User with this email does not exist.' });
     }
