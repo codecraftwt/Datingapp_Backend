@@ -25,10 +25,61 @@ const checkIsOnline = (user) => {
   return false;
 };
 
+const extractUploadTimeFromUrl = (url, fallback) => {
+  if (!url || typeof url !== 'string') return fallback ? new Date(fallback).toISOString() : null;
+
+  // 1. Multer or frontend format: upload_1725789123456_ or media_1725789123456_
+  const namedMatch = url.match(/(?:upload|media|photo|img|file|video)[-_](\d{10,13})_/i);
+  if (namedMatch && namedMatch[1]) {
+    const num = parseInt(namedMatch[1], 10);
+    const ms = num < 10000000000 ? num * 1000 : num;
+    if (!isNaN(ms) && ms > 1577836800000 && ms <= Date.now() + 86400000) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  // 2. Cloudinary version tag: /v(\d{9,13})/
+  const cldMatch = url.match(/\/v(\d{9,13})\//);
+  if (cldMatch && cldMatch[1]) {
+    const num = parseInt(cldMatch[1], 10);
+    const ms = num < 10000000000 ? num * 1000 : num;
+    if (!isNaN(ms) && ms > 1577836800000 && ms <= Date.now() + 86400000) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  // 3. Basename timestamp
+  const filename = url.split('?')[0].split('/').pop() || '';
+  const ts13Match = filename.match(/(\d{13})/);
+  if (ts13Match && ts13Match[1]) {
+    const ms = parseInt(ts13Match[1], 10);
+    if (!isNaN(ms) && ms > 1577836800000 && ms <= Date.now() + 86400000) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  const ts10Match = filename.match(/(\d{10})/);
+  if (ts10Match && ts10Match[1]) {
+    const ms = parseInt(ts10Match[1], 10) * 1000;
+    if (!isNaN(ms) && ms > 1577836800000 && ms <= Date.now() + 86400000) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  if (fallback) {
+    try {
+      const d = new Date(fallback);
+      if (!isNaN(d.getTime())) return d.toISOString();
+    } catch (e) {}
+  }
+  return null;
+};
+
 const ensureMediaTimestamps = (user) => {
   if (!user) return {};
   const existing = user.mediaTimestamps && typeof user.mediaTimestamps === 'object' ? { ...user.mediaTimestamps } : {};
-  const fallback = (user.updatedAt || user.createdAt || new Date()).toISOString();
+  // Fall back strictly to user creation date - NEVER updatedAt which changes on every user activity
+  const fallback = user.createdAt ? new Date(user.createdAt).toISOString() : null;
 
   const allMedia = [
     user.profileImage,
@@ -39,8 +90,18 @@ const ensureMediaTimestamps = (user) => {
   ].filter(Boolean);
 
   for (const item of allMedia) {
-    if (typeof item === 'string' && item.trim().length > 0 && !existing[item]) {
-      existing[item] = fallback;
+    if (typeof item === 'string' && item.trim().length > 0) {
+      const extracted = extractUploadTimeFromUrl(item, fallback);
+      if (!existing[item]) {
+        existing[item] = extracted || fallback || new Date().toISOString();
+      } else if (extracted) {
+        // Heal corrupt entry if existing date is significantly newer than authentic creation date (e.g. was overwritten by an updatedAt or current timestamp)
+        const existingMs = new Date(existing[item]).getTime();
+        const extractedMs = new Date(extracted).getTime();
+        if (!isNaN(existingMs) && !isNaN(extractedMs) && existingMs > extractedMs + 120000) {
+          existing[item] = extracted;
+        }
+      }
     }
   }
   return existing;
@@ -426,6 +487,8 @@ exports.advancedSearch = async (req, res) => {
         isEmailVerified: !!user.isEmailVerified,
         isMobileVerified: !!user.isMobileVerified,
         lastSeen: user.lastSeen || user.updatedAt || user.createdAt,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
       };
     });
 

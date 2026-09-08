@@ -121,7 +121,12 @@ if (mongoose.connection.readyState === 0) {
           { isMobileVerified: { $ne: true } },
           { $set: { isEmailVerified: false, isVerified: false } }
         );
-        console.log('Successfully sanitized existing database documents and verification flags.');
+        const Report = require('./models/Report');
+        await Report.updateMany(
+          { $expr: { $eq: ['$reporterId', '$reportedId'] } },
+          { $set: { reporterId: null } }
+        );
+        console.log('Successfully sanitized existing database documents, verification flags, and report records.');
       } catch (cleanErr) {
         console.error('Geo cleanup error:', cleanErr);
       }

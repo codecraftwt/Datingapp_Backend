@@ -38,6 +38,87 @@ const checkIsOnline = (user) => {
   return false;
 };
 
+const extractUploadTimeFromUrl = (url, fallback) => {
+  if (!url || typeof url !== 'string') return fallback ? new Date(fallback).toISOString() : null;
+
+  // 1. Multer or frontend format: upload_1725789123456_ or media_1725789123456_
+  const namedMatch = url.match(/(?:upload|media|photo|img|file|video)[-_](\d{10,13})_/i);
+  if (namedMatch && namedMatch[1]) {
+    const num = parseInt(namedMatch[1], 10);
+    const ms = num < 10000000000 ? num * 1000 : num;
+    if (!isNaN(ms) && ms > 1577836800000 && ms <= Date.now() + 86400000) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  // 2. Cloudinary version tag: /v(\d{9,13})/
+  const cldMatch = url.match(/\/v(\d{9,13})\//);
+  if (cldMatch && cldMatch[1]) {
+    const num = parseInt(cldMatch[1], 10);
+    const ms = num < 10000000000 ? num * 1000 : num;
+    if (!isNaN(ms) && ms > 1577836800000 && ms <= Date.now() + 86400000) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  // 3. Basename timestamp
+  const filename = url.split('?')[0].split('/').pop() || '';
+  const ts13Match = filename.match(/(\d{13})/);
+  if (ts13Match && ts13Match[1]) {
+    const ms = parseInt(ts13Match[1], 10);
+    if (!isNaN(ms) && ms > 1577836800000 && ms <= Date.now() + 86400000) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  const ts10Match = filename.match(/(\d{10})/);
+  if (ts10Match && ts10Match[1]) {
+    const ms = parseInt(ts10Match[1], 10) * 1000;
+    if (!isNaN(ms) && ms > 1577836800000 && ms <= Date.now() + 86400000) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  if (fallback) {
+    try {
+      const d = new Date(fallback);
+      if (!isNaN(d.getTime())) return d.toISOString();
+    } catch (e) {}
+  }
+  return null;
+};
+
+const ensureMediaTimestamps = (user) => {
+  if (!user) return {};
+  const existing = user.mediaTimestamps && typeof user.mediaTimestamps === 'object' ? { ...user.mediaTimestamps } : {};
+  // Fall back strictly to user creation date - NEVER updatedAt which changes on every login/swipe/heartbeat
+  const fallback = user.createdAt ? new Date(user.createdAt).toISOString() : null;
+
+  const allMedia = [
+    user.profileImage,
+    ...(Array.isArray(user.profileImages) ? user.profileImages : []),
+    ...(Array.isArray(user.photos) ? user.photos : []),
+    ...(Array.isArray(user.videos) ? user.videos : []),
+    ...(Array.isArray(user.media) ? user.media : []),
+  ].filter(Boolean);
+
+  for (const item of allMedia) {
+    if (typeof item === 'string' && item.trim().length > 0) {
+      const extracted = extractUploadTimeFromUrl(item, fallback);
+      if (!existing[item]) {
+        existing[item] = extracted || fallback || new Date().toISOString();
+      } else if (extracted) {
+        // Heal corrupt entry if existing date is significantly newer than authentic creation date (e.g. was overwritten by an updatedAt or current timestamp)
+        const existingMs = new Date(existing[item]).getTime();
+        const extractedMs = new Date(extracted).getTime();
+        if (!isNaN(existingMs) && !isNaN(extractedMs) && existingMs > extractedMs + 120000) {
+          existing[item] = extracted;
+        }
+      }
+    }
+  }
+  return existing;
+};
 
 /**
  * Save/Update user dating profile questionnaire
@@ -190,15 +271,29 @@ exports.saveQuestionnaire = async (req, res) => {
       videos: galleryVideos,
       media: galleryMedia,
       mediaTimestamps: (() => {
-        const ts = { ...(req.user?.mediaTimestamps || {}) };
-        if (finalProfileImage && !ts[finalProfileImage]) {
-          ts[finalProfileImage] = new Date().toISOString();
-        }
-        galleryMedia.forEach((imgUrl) => {
-          if (imgUrl && typeof imgUrl === 'string' && !ts[imgUrl]) {
-            ts[imgUrl] = new Date().toISOString();
+        const ts = {
+          ...(req.user?.mediaTimestamps || {}),
+          ...(req.body?.mediaTimestamps || {}),
+        };
+        const allMedia = [
+          finalProfileImage,
+          ...(Array.isArray(galleryMedia) ? galleryMedia : [])
+        ].filter(Boolean);
+
+        for (const item of allMedia) {
+          if (typeof item === 'string' && item.trim().length > 0) {
+            const extracted = extractUploadTimeFromUrl(item, req.user?.createdAt);
+            if (!ts[item]) {
+              ts[item] = extracted || new Date().toISOString();
+            } else if (extracted) {
+              const existingMs = new Date(ts[item]).getTime();
+              const extractedMs = new Date(extracted).getTime();
+              if (!isNaN(existingMs) && !isNaN(extractedMs) && existingMs > extractedMs + 120000) {
+                ts[item] = extracted;
+              }
+            }
           }
-        });
+        }
         return ts;
       })(),
       bio,
@@ -653,7 +748,9 @@ exports.getQuestionnaires = async (req, res) => {
           photos: publicPhotos,
           videos: publicVideos,
           media: publicMedia,
-          mediaTimestamps: u.mediaTimestamps || {},
+          mediaTimestamps: ensureMediaTimestamps(u),
+          createdAt: u.createdAt,
+          updatedAt: u.updatedAt,
           gender: u.gender,
           orientation: u.orientation || '',
           lookingFor: u.lookingFor || '',
@@ -684,27 +781,6 @@ exports.getQuestionnaires = async (req, res) => {
 /**
  * Get user profile by ID
  */
-const ensureMediaTimestamps = (user) => {
-  if (!user) return {};
-  const existing = user.mediaTimestamps && typeof user.mediaTimestamps === 'object' ? { ...user.mediaTimestamps } : {};
-  const fallback = (user.updatedAt || user.createdAt || new Date()).toISOString();
-
-  const allMedia = [
-    user.profileImage,
-    ...(Array.isArray(user.profileImages) ? user.profileImages : []),
-    ...(Array.isArray(user.photos) ? user.photos : []),
-    ...(Array.isArray(user.videos) ? user.videos : []),
-    ...(Array.isArray(user.media) ? user.media : []),
-  ].filter(Boolean);
-
-  for (const item of allMedia) {
-    if (typeof item === 'string' && item.trim().length > 0 && !existing[item]) {
-      existing[item] = fallback;
-    }
-  }
-  return existing;
-};
-
 exports.getProfile = async (req, res) => {
   try {
     const freshUser = await User.findById(req.user._id).select('-password');
@@ -764,6 +840,8 @@ exports.getProfile = async (req, res) => {
         isEmailVerified: !!freshUser.isEmailVerified,
         isMobileVerified: !!freshUser.isMobileVerified,
         lastSeen: freshUser.lastSeen || freshUser.updatedAt || freshUser.createdAt,
+        createdAt: freshUser.createdAt,
+        updatedAt: freshUser.updatedAt,
         fcmToken: freshUser.fcmToken,
       }
     });
@@ -795,6 +873,22 @@ exports.getUserById = async (req, res) => {
     }
 
     const currentUserIdStr = req.user?._id ? req.user._id.toString() : '';
+
+    // If the target user has blocked the current user, deny access to full profile
+    if (currentUserIdStr && mongoose.Types.ObjectId.isValid(currentUserIdStr)) {
+      const Block = require('../models/Block');
+      const hasBlockedMe = await Block.findOne({
+        blockerId: targetUserId,
+        blockedId: currentUserIdStr,
+      });
+      if (hasBlockedMe) {
+        return res.status(403).json({
+          message: 'Profile is unavailable because this user has blocked you.',
+          user: null,
+        });
+      }
+    }
+
     const currentUser = currentUserIdStr ? await User.findById(currentUserIdStr) : null;
     const currentUserCoords = getUserCoordinates(currentUser);
     const targetCoords = getUserCoordinates(targetUser);
@@ -886,6 +980,8 @@ exports.getUserById = async (req, res) => {
         isEmailVerified: !!targetUser.isEmailVerified,
         isMobileVerified: !!targetUser.isMobileVerified,
         lastSeen: targetUser.lastSeen || targetUser.updatedAt || targetUser.createdAt,
+        createdAt: targetUser.createdAt,
+        updatedAt: targetUser.updatedAt,
       }
     });
   } catch (error) {
@@ -1834,12 +1930,27 @@ exports.getMyReports = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Unauthorized session.' });
     }
 
-    const reports = await Report.find({ reporterId: req.user._id })
+    const currentUserId = req.user._id;
+
+    // Fetch only reports submitted BY the logged-in user, strictly excluding:
+    // 1) Reports where current user is the reported target
+    // 2) Any legacy records where reporterId === reportedId
+    const reports = await Report.find({
+      reporterId: currentUserId,
+      reportedId: { $ne: currentUserId },
+    })
       .populate('reportedId', 'name firstName email age gender profileImage profileImages photos')
       .sort({ createdAt: -1 })
       .lean();
 
-    const formattedReports = reports.map((rep) => {
+    // Additional safety filter: only include reports where reportedId is valid and different from current user
+    const validReports = reports.filter((rep) => {
+      if (!rep.reportedId) return false;
+      const reportedTargetId = (rep.reportedId._id || rep.reportedId).toString();
+      return reportedTargetId !== currentUserId.toString();
+    });
+
+    const formattedReports = validReports.map((rep) => {
       const reportedUser = rep.reportedId || {};
       const profileImage =
         reportedUser.profileImage ||

@@ -380,6 +380,14 @@ exports.getLikes = async (req, res) => {
         bio: u.bio || '',
         interests: u.interests || [],
         image: u.profileImage || '',
+        profileImage: u.profileImage || '',
+        profileImages: u.profileImages || [],
+        photos: u.photos || [],
+        videos: u.videos || [],
+        media: u.media || [],
+        mediaTimestamps: u.mediaTimestamps || {},
+        createdAt: u.createdAt,
+        updatedAt: u.updatedAt,
         gender: u.gender,
         orientation: u.orientation || '',
         lookingFor: u.lookingFor || '',
@@ -695,6 +703,10 @@ exports.reportUser = async (req, res) => {
 
     if (!targetId) {
       return res.status(400).json({ message: 'Reported user ID is required.' });
+    }
+
+    if (currentUserId.toString() === targetId.toString()) {
+      return res.status(400).json({ message: 'You cannot report your own profile.' });
     }
 
     if (!reason) {

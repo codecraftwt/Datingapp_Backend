@@ -196,43 +196,72 @@ exports.editMessage = async (req, res) => {
 };
 
 /**
- * Delete a message sent by the authenticated user
+ * Delete a message.
+ * - deleteForEveryone=true  → hard-delete from DB, notify both sender & receiver via socket
+ * - deleteForEveryone=false → "delete for me" — marks deletedBySender=true (only hides for sender)
  */
 exports.deleteMessage = async (req, res) => {
   try {
     const currentUserId = req.user._id;
     const { messageId } = req.params;
+    const deleteForEveryone = req.body?.deleteForEveryone === true || req.query?.deleteForEveryone === 'true';
 
     const message = await Message.findById(messageId);
     if (!message) {
       return res.status(404).json({ message: 'Message not found.' });
     }
 
-    if (message.senderId.toString() !== currentUserId.toString()) {
+    const isSender = message.senderId.toString() === currentUserId.toString();
+    const isReceiver = message.receiverId.toString() === currentUserId.toString();
+
+    if (!isSender && !isReceiver) {
       return res.status(403).json({ message: 'You are not authorized to delete this message.' });
     }
 
-    const receiverId = message.receiverId.toString();
-    await Message.findByIdAndDelete(messageId);
-
     const io = req.app.get('io');
-    if (io && global.onlineUsers) {
-      const receiverSocketId = global.onlineUsers.get(receiverId);
-      if (receiverSocketId) {
-        io.to(receiverSocketId).emit('message_deleted', {
+
+    if (deleteForEveryone) {
+      // Only the original sender can delete for everyone
+      if (!isSender) {
+        return res.status(403).json({ message: 'Only the sender can delete a message for everyone.' });
+      }
+
+      const receiverId = message.receiverId.toString();
+      await Message.findByIdAndDelete(messageId);
+
+      // Notify both sender and receiver to remove the message from their UI
+      if (io) {
+        const payload = { messageId: messageId.toString(), senderId: currentUserId.toString(), receiverId, deletedForEveryone: true };
+        io.to(currentUserId.toString()).emit('message_deleted', payload);
+        io.to(receiverId).emit('message_deleted', payload);
+      }
+
+      return res.status(200).json({ message: 'Message deleted for everyone.', messageId, deletedForEveryone: true });
+    } else {
+      // Delete for me only — mark the appropriate flag
+      if (isSender) {
+        await Message.findByIdAndUpdate(messageId, { $set: { deletedBySender: true } });
+      } else {
+        await Message.findByIdAndUpdate(messageId, { $set: { deletedByReceiver: true } });
+      }
+
+      // Notify only the current user's own sockets to remove from UI
+      if (io) {
+        io.to(currentUserId.toString()).emit('message_deleted', {
           messageId: messageId.toString(),
           senderId: currentUserId.toString(),
-          receiverId
+          deletedForEveryone: false,
         });
       }
-    }
 
-    return res.status(200).json({ message: 'Message deleted successfully.', messageId });
+      return res.status(200).json({ message: 'Message deleted for you.', messageId, deletedForEveryone: false });
+    }
   } catch (error) {
     console.error('Delete message error:', error);
     return res.status(500).json({ message: 'Server error while deleting message.' });
   }
 };
+
 
 /**
  * Clear all chat messages (conversations) globally for the authenticated user

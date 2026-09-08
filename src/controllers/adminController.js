@@ -517,7 +517,7 @@ exports.warnUser = async (req, res) => {
     // Create Report entry so warning appears in Admin Panel Reports tab
     try {
       await Report.create({
-        reporterId: req.user?._id || user._id,
+        reporterId: (req.user && req.user._id && req.user._id.toString() !== user._id.toString()) ? req.user._id : null,
         reportedId: user._id,
         reason: `[${category.trim()}] ${message.trim()}`,
         details: `Severity: ${(severity || 'high').toUpperCase()} | Issued by Admin Moderation Team`,
