@@ -209,7 +209,14 @@ exports.getAllRegisteredUsers = async (req, res) => {
 
     // 2. Gender Filter
     if (gender) {
-      filter.gender = new RegExp(`^${gender.trim()}$`, 'i');
+      const g = gender.trim().toLowerCase();
+      if (['men', 'man', 'male'].includes(g)) {
+        filter.gender = /^(men|man|male)$/i;
+      } else if (['women', 'woman', 'female'].includes(g)) {
+        filter.gender = /^(women|woman|female)$/i;
+      } else {
+        filter.gender = new RegExp(`^${gender.trim()}$`, 'i');
+      }
     }
 
     // 3. Online Status Filter
@@ -239,8 +246,8 @@ const checkIsOnline = (user) => {
     const sortObj = { [sortBy]: sortOrder };
 
     const totalUsersCount = await User.countDocuments({});
-    const menCount = await User.countDocuments({ gender: /^men$/i });
-    const womenCount = await User.countDocuments({ gender: /^women$/i });
+    const menCount = await User.countDocuments({ gender: /^(men|man|male)$/i });
+    const womenCount = await User.countDocuments({ gender: /^(women|woman|female)$/i });
 
     let query = User.find(filter)
       .select('name firstName email mobile gender age orientation interestedIn lookingFor profileImage profileImages fcmToken isLoggedIn isOnline lastSeen createdAt updatedAt warnings')
