@@ -25,6 +25,27 @@ const checkIsOnline = (user) => {
   return false;
 };
 
+const ensureMediaTimestamps = (user) => {
+  if (!user) return {};
+  const existing = user.mediaTimestamps && typeof user.mediaTimestamps === 'object' ? { ...user.mediaTimestamps } : {};
+  const fallback = (user.updatedAt || user.createdAt || new Date()).toISOString();
+
+  const allMedia = [
+    user.profileImage,
+    ...(Array.isArray(user.profileImages) ? user.profileImages : []),
+    ...(Array.isArray(user.photos) ? user.photos : []),
+    ...(Array.isArray(user.videos) ? user.videos : []),
+    ...(Array.isArray(user.media) ? user.media : []),
+  ].filter(Boolean);
+
+  for (const item of allMedia) {
+    if (typeof item === 'string' && item.trim().length > 0 && !existing[item]) {
+      existing[item] = fallback;
+    }
+  }
+  return existing;
+};
+
 /**
  * Helper function to calculate Haversine distance in kilometers
  */
@@ -383,6 +404,7 @@ exports.advancedSearch = async (req, res) => {
         photos: publicPhotos,
         videos: publicVideos,
         media: publicMedia,
+        mediaTimestamps: ensureMediaTimestamps(user),
         interests: user.interests || [],
         languages: user.languages || [],
         commonInterests: user.commonInterests || [],

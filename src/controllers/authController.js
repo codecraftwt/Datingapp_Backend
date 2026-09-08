@@ -267,6 +267,20 @@ exports.login = async (req, res) => {
       }
     }
 
+    // If forceLogoutAll is true, notify connected sockets on other devices to force logout
+    if (user.currentToken && forceLogoutAll === true) {
+      const uIdStr = user._id.toString();
+      const io = global.io || (req.app ? req.app.get('io') : null);
+      if (io) {
+        console.log(`[AUTH CONTROLLER] Emitting session_terminated event for forced login to room: ${uIdStr}`);
+        io.to(uIdStr).emit('session_terminated', {
+          message: 'Your session has been terminated because you logged out from all devices.',
+          code: 'SESSION_TERMINATED',
+          userId: uIdStr,
+        });
+      }
+    }
+
     const token = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET || 'super_secret_dating_app_token_key_123!',
@@ -390,6 +404,81 @@ exports.logout = async (req, res) => {
   } catch (error) {
     console.error('Logout error:', error);
     return res.status(500).json({ message: 'Server error during logout.' });
+  }
+};
+
+/**
+ * Log out user from all devices & invalidate all active sessions
+ */
+exports.logoutAllDevices = async (req, res) => {
+  try {
+    await ensureDbConnection();
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email and password are required.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const safeRegexEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const user = await User.findOne({
+      $or: [
+        { email: cleanEmail },
+        { email: { $regex: new RegExp(`^${safeRegexEmail}$`, 'i') } }
+      ]
+    });
+
+    if (!user || !user.password) {
+      return res.status(400).json({ message: 'Invalid email or password.' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid email or password.' });
+    }
+
+    const userIdStr = user._id.toString();
+
+    await User.findByIdAndUpdate(user._id, {
+      $set: { currentToken: null, isLoggedIn: false, isOnline: false, fcmToken: null, lastSeen: new Date() }
+    });
+
+    if (global.onlineUsers) {
+      global.onlineUsers.delete(userIdStr);
+    }
+
+    const io = global.io || (req.app ? req.app.get('io') : null);
+    if (io) {
+      console.log(`[AUTH CONTROLLER] Emitting session_terminated event to user room: ${userIdStr}`);
+      io.to(userIdStr).emit('session_terminated', {
+        message: 'Your session has been terminated because you logged out from all devices.',
+        code: 'SESSION_TERMINATED',
+        userId: userIdStr,
+      });
+      if (global.onlineUsers && global.onlineUsers.get) {
+        const socketId = global.onlineUsers.get(userIdStr);
+        if (socketId) {
+          io.to(socketId).emit('session_terminated', {
+            message: 'Your session has been terminated because you logged out from all devices.',
+            code: 'SESSION_TERMINATED',
+            userId: userIdStr,
+          });
+        }
+      }
+      io.emit('user_status', {
+        userId: userIdStr,
+        status: 'offline',
+        isOnline: false,
+        lastSeen: new Date().toISOString(),
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Successfully logged out from all devices.',
+    });
+  } catch (error) {
+    console.error('logoutAllDevices error:', error);
+    return res.status(500).json({ message: 'Server error during logout from all devices.' });
   }
 };
 

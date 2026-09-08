@@ -15,11 +15,14 @@ cloudinary.config({
 });
 
 /**
- * Get all chat messages involving the authenticated user
+ * Get all chat messages involving the authenticated user.
+ * Also returns a `conversationPartners` map (userId -> { name, image }) so the
+ * chat list always has real names regardless of block status.
  */
 exports.getMessages = async (req, res) => {
   try {
     const currentUserId = req.user._id;
+    const currentUserIdStr = currentUserId.toString();
 
     const messages = await Message.find({
       $or: [
@@ -28,12 +31,40 @@ exports.getMessages = async (req, res) => {
       ]
     }).sort({ createdAt: 1 });
 
-    return res.status(200).json(messages);
+    // Collect all unique partner IDs from messages
+    const partnerIdSet = new Set();
+    messages.forEach((msg) => {
+      const sId = msg.senderId?.toString();
+      const rId = msg.receiverId?.toString();
+      if (sId && sId !== currentUserIdStr) partnerIdSet.add(sId);
+      if (rId && rId !== currentUserIdStr) partnerIdSet.add(rId);
+    });
+
+    // Fetch partner user records in one batch query (no block filtering — just raw name/image)
+    const partnerUsers = await User.find(
+      { _id: { $in: Array.from(partnerIdSet) } },
+      'firstName name profileImage isOnline lastSeen'
+    ).lean();
+
+    const conversationPartners = {};
+    partnerUsers.forEach((u) => {
+      const uId = u._id.toString();
+      conversationPartners[uId] = {
+        id: uId,
+        name: u.firstName || u.name || null,
+        image: u.profileImage || null,
+        isOnline: !!u.isOnline,
+        lastSeen: u.lastSeen,
+      };
+    });
+
+    return res.status(200).json({ messages, conversationPartners });
   } catch (error) {
     console.error('Fetch all messages error:', error);
     return res.status(500).json({ message: 'Server error while fetching messages.' });
   }
 };
+
 
 /**
  * Get all chat messages between the authenticated user and the selected user

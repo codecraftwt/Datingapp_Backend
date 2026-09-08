@@ -99,6 +99,7 @@ const UserSchema = new mongoose.Schema(
     videos: [{ type: String }],
     media: [{ type: String }],
     hiddenMedia: [{ type: String }],
+    mediaTimestamps: { type: mongoose.Schema.Types.Mixed, default: {} },
     completionPercentage: { type: Number, default: 0 },
     bio: { type: String, trim: true },
     isLoggedIn: { type: Boolean, default: false },

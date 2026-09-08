@@ -155,6 +155,12 @@ exports.saveQuestionnaire = async (req, res) => {
       }
     }
 
+    // Slot #1 is strictly reserved for main profile image (profileImage).
+    // Strip finalProfileImage from gallery arrays (Slots 2 to 9) so it is not duplicated.
+    const galleryMedia = finalProfileImages.filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== finalProfileImage);
+    const galleryPhotos = galleryMedia.filter((p) => !isBackendVideoUrl(p));
+    const galleryVideos = galleryMedia.filter((p) => isBackendVideoUrl(p));
+
     const setObj = {
       firstName,
       bdayDay,
@@ -179,10 +185,22 @@ exports.saveQuestionnaire = async (req, res) => {
       ageRangeMax,
       distanceRange,
       profileImage: finalProfileImage,
-      profileImages: finalProfileImages,
-      photos: finalProfileImages,
-      videos: detectedVideos,
-      media: finalProfileImages,
+      profileImages: galleryMedia,
+      photos: galleryPhotos,
+      videos: galleryVideos,
+      media: galleryMedia,
+      mediaTimestamps: (() => {
+        const ts = { ...(req.user?.mediaTimestamps || {}) };
+        if (finalProfileImage && !ts[finalProfileImage]) {
+          ts[finalProfileImage] = new Date().toISOString();
+        }
+        galleryMedia.forEach((imgUrl) => {
+          if (imgUrl && typeof imgUrl === 'string' && !ts[imgUrl]) {
+            ts[imgUrl] = new Date().toISOString();
+          }
+        });
+        return ts;
+      })(),
       bio,
       gender,
       languages,
@@ -252,6 +270,7 @@ exports.saveQuestionnaire = async (req, res) => {
         photos: updatedUser.photos || updatedUser.profileImages || [],
         videos: updatedUser.videos || (updatedUser.profileImages || []).filter((p) => isBackendVideoUrl(p)),
         media: updatedUser.media || updatedUser.profileImages || [],
+        mediaTimestamps: updatedUser.mediaTimestamps || {},
         completionPercentage: updatedUser.completionPercentage || 0,
         bio: updatedUser.bio || '',
         location: updatedUser.location
@@ -587,23 +606,30 @@ exports.getQuestionnaires = async (req, res) => {
 
         const hiddenSet = new Set(Array.isArray(u.hiddenMedia) ? u.hiddenMedia : []);
 
-        const rawProfileImages = (Array.isArray(u.profileImages) ? u.profileImages : [])
-          .filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined');
-
-        const activeMediaSet = new Set(
-          rawProfileImages.length > 0
-            ? rawProfileImages
-            : (u.profileImage && u.profileImage !== 'null' ? [u.profileImage] : [])
-        );
-
-        const publicProfileImages = Array.from(activeMediaSet).filter((p) => !hiddenSet.has(p));
-        const publicPhotos = publicProfileImages.filter((p) => !isBackendVideoUrl(p));
-        const publicVideos = publicProfileImages.filter((p) => isBackendVideoUrl(p));
-        const publicMedia = publicProfileImages;
-
-        const safeProfileImage = (u.profileImage && activeMediaSet.has(u.profileImage) && !hiddenSet.has(u.profileImage))
+        const safeProfileImage = (u.profileImage && typeof u.profileImage === 'string' && u.profileImage.trim().length > 0 && u.profileImage !== 'null' && u.profileImage !== 'undefined' && !hiddenSet.has(u.profileImage))
           ? u.profileImage
-          : (publicProfileImages[0] || '');
+          : '';
+
+        // Combine gallery media arrays (Slots 2 to 9) strictly excluding Slot #1 main profile image
+        const rawPhotos = Array.isArray(u.photos) ? u.photos : [];
+        const rawMedia = Array.isArray(u.media) ? u.media : [];
+        const rawProfileImages = Array.isArray(u.profileImages) ? u.profileImages : [];
+        const rawVideos = Array.isArray(u.videos) ? u.videos : [];
+
+        const combinedGalleryMedia = [
+          ...rawProfileImages,
+          ...rawPhotos,
+          ...rawVideos,
+          ...rawMedia,
+        ].filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined' && p !== safeProfileImage && !hiddenSet.has(p));
+
+        // Deduplicate gallery media items for Slots 2 to 9 while preserving order
+        const activeGalleryMedia = Array.from(new Set(combinedGalleryMedia));
+
+        const publicPhotos = activeGalleryMedia.filter((p) => !isBackendVideoUrl(p));
+        const publicVideos = activeGalleryMedia.filter((p) => isBackendVideoUrl(p));
+        const publicProfileImages = activeGalleryMedia;
+        const publicMedia = activeGalleryMedia;
 
         return {
           id: u._id,
@@ -627,6 +653,7 @@ exports.getQuestionnaires = async (req, res) => {
           photos: publicPhotos,
           videos: publicVideos,
           media: publicMedia,
+          mediaTimestamps: u.mediaTimestamps || {},
           gender: u.gender,
           orientation: u.orientation || '',
           lookingFor: u.lookingFor || '',
@@ -657,12 +684,35 @@ exports.getQuestionnaires = async (req, res) => {
 /**
  * Get user profile by ID
  */
+const ensureMediaTimestamps = (user) => {
+  if (!user) return {};
+  const existing = user.mediaTimestamps && typeof user.mediaTimestamps === 'object' ? { ...user.mediaTimestamps } : {};
+  const fallback = (user.updatedAt || user.createdAt || new Date()).toISOString();
+
+  const allMedia = [
+    user.profileImage,
+    ...(Array.isArray(user.profileImages) ? user.profileImages : []),
+    ...(Array.isArray(user.photos) ? user.photos : []),
+    ...(Array.isArray(user.videos) ? user.videos : []),
+    ...(Array.isArray(user.media) ? user.media : []),
+  ].filter(Boolean);
+
+  for (const item of allMedia) {
+    if (typeof item === 'string' && item.trim().length > 0 && !existing[item]) {
+      existing[item] = fallback;
+    }
+  }
+  return existing;
+};
+
 exports.getProfile = async (req, res) => {
   try {
     const freshUser = await User.findById(req.user._id).select('-password');
     if (!freshUser) {
       return res.status(404).json({ message: 'User not found.' });
     }
+
+    const mediaTimestampsMap = ensureMediaTimestamps(freshUser);
 
     return res.status(200).json({
       message: 'Profile fetched successfully',
@@ -697,11 +747,12 @@ exports.getProfile = async (req, res) => {
         ageRangeMax: freshUser.ageRangeMax,
         distanceRange: freshUser.distanceRange,
         profileImage: freshUser.profileImage,
-        profileImages: freshUser.profileImages || [],
-        photos: freshUser.photos || freshUser.profileImages || [],
-        videos: freshUser.videos || (freshUser.profileImages || []).filter((p) => isBackendVideoUrl(p)),
-        media: freshUser.media || freshUser.profileImages || [],
+        profileImages: (freshUser.profileImages || []).filter(p => p && p !== freshUser.profileImage),
+        photos: (freshUser.photos || freshUser.profileImages || []).filter(p => p && p !== freshUser.profileImage),
+        videos: (freshUser.videos || []).filter(p => p && p !== freshUser.profileImage && isBackendVideoUrl(p)),
+        media: (freshUser.media || freshUser.profileImages || []).filter(p => p && p !== freshUser.profileImage),
         hiddenMedia: freshUser.hiddenMedia || [],
+        mediaTimestamps: mediaTimestampsMap,
         completionPercentage: freshUser.completionPercentage || 0,
         bio: freshUser.bio || '',
         permanentAddress: freshUser.permanentAddress,
@@ -765,23 +816,21 @@ exports.getUserById = async (req, res) => {
       .filter(item => item && item.hiddenForUserId && item.hiddenForUserId.toString() === currentUserIdStr)
       .map(item => item.mediaUrl);
 
-    const validTargetProfileImages = (Array.isArray(targetUser.profileImages) ? targetUser.profileImages : [])
-      .filter(p => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined');
+    const safeProfileImage = (targetUser.profileImage && typeof targetUser.profileImage === 'string' && targetUser.profileImage.trim().length > 0 && targetUser.profileImage !== 'null' && targetUser.profileImage !== 'undefined' && !userHiddenMediaList.includes(targetUser.profileImage))
+      ? targetUser.profileImage
+      : '';
 
-    const activeTargetSet = new Set(
-      validTargetProfileImages.length > 0
-        ? validTargetProfileImages
-        : (targetUser.profileImage && targetUser.profileImage !== 'null' ? [targetUser.profileImage] : [])
-    );
+    const rawGalleryMedia = [
+      ...(Array.isArray(targetUser.profileImages) ? targetUser.profileImages : []),
+      ...(Array.isArray(targetUser.photos) ? targetUser.photos : []),
+      ...(Array.isArray(targetUser.videos) ? targetUser.videos : []),
+      ...(Array.isArray(targetUser.media) ? targetUser.media : []),
+    ].filter(p => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined' && p !== safeProfileImage && !userHiddenMediaList.includes(p));
 
-    const publicProfileImages = Array.from(activeTargetSet).filter(url => !userHiddenMediaList.includes(url));
+    const publicProfileImages = Array.from(new Set(rawGalleryMedia));
     const publicPhotos = publicProfileImages.filter(p => !isBackendVideoUrl(p));
     const publicVideos = publicProfileImages.filter(p => isBackendVideoUrl(p));
     const publicMedia = publicProfileImages;
-
-    let safeProfileImage = (targetUser.profileImage && activeTargetSet.has(targetUser.profileImage) && !userHiddenMediaList.includes(targetUser.profileImage))
-      ? targetUser.profileImage
-      : (publicProfileImages[0] || '');
 
     // Calculate age
     let computedAge = targetUser.age;
@@ -818,6 +867,7 @@ exports.getUserById = async (req, res) => {
         photos: publicPhotos,
         videos: publicVideos,
         media: publicMedia,
+        mediaTimestamps: ensureMediaTimestamps(targetUser),
         gender: targetUser.gender || '',
         orientation: targetUser.orientation || '',
         lookingFor: targetUser.lookingFor || '',
@@ -1366,14 +1416,22 @@ exports.uploadMainPhoto = async (req, res) => {
     const file = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
     let imageUrl = req.body?.imageUrl || req.body?.photo || req.body?.url;
 
-    if (file && file.path) {
-      const isVid = isBackendVideoUrl(file.path) || (file.mimetype && file.mimetype.startsWith('video/'));
-      const resType = isVid ? 'video' : 'auto';
-      const uploadOpts = { folder: 'dating_app_profiles', resource_type: resType };
-      if (isVid) {
-        uploadOpts.transformation = [{ start_offset: '0', end_offset: '15' }];
-      }
+    // Check if the uploaded file or URL is a video - Slot #1 strictly accepts images only
+    const isVidFile = file && (isBackendVideoUrl(file.path) || (file.mimetype && file.mimetype.startsWith('video/')) || /\.(mp4|mov|webm|3gp|mkv|avi|m4v|flv)($|\?|#)/i.test(file.originalname || ''));
+    const isVidUrl = isBackendVideoUrl(imageUrl);
 
+    if (isVidFile || isVidUrl) {
+      if (file && file.path && fs.existsSync(file.path)) {
+        try { fs.unlinkSync(file.path); } catch (e) {}
+      }
+      return res.status(400).json({
+        success: false,
+        message: 'Slot #1 accepts images/photos only. Videos are not allowed for Slot #1.',
+      });
+    }
+
+    if (file && file.path) {
+      const uploadOpts = { folder: 'dating_app_profiles', resource_type: 'image' };
       try {
         const cloudRes = await cloudinary.uploader.unsigned_upload(file.path, 'Dating_Profiles', uploadOpts);
         if (cloudRes && cloudRes.secure_url) imageUrl = cloudRes.secure_url;
@@ -1384,36 +1442,22 @@ exports.uploadMainPhoto = async (req, res) => {
     }
 
     if (!imageUrl) {
-      return res.status(400).json({ success: false, message: 'No valid image or video file provided for main profile image.' });
+      return res.status(400).json({ success: false, message: 'No valid image file provided for main profile image.' });
     }
 
     const currentUser = await User.findById(req.user._id);
 
-    const updatedProfileImages = Array.isArray(currentUser?.profileImages) ? [...currentUser.profileImages] : [];
-    if (updatedProfileImages.length > 0) {
-      updatedProfileImages[0] = imageUrl;
-    } else {
-      updatedProfileImages.push(imageUrl);
-    }
+    // Slot #1 is strictly reserved for main profile image (profileImage).
+    // Ensure profileImage is NOT added/duplicated into Slots 2 to 9 gallery media arrays (profileImages, photos, media, videos).
+    const isNotNewMain = (url) => typeof url === 'string' && url.trim().length > 0 && url !== 'null' && url !== imageUrl;
 
-    const updatedPhotos = Array.isArray(currentUser?.photos) ? [...currentUser.photos] : [];
-    if (updatedPhotos.length > 0) {
-      updatedPhotos[0] = imageUrl;
-    } else {
-      updatedPhotos.push(imageUrl);
-    }
+    const updatedProfileImages = (currentUser?.profileImages || []).filter(isNotNewMain);
+    const updatedPhotos = (currentUser?.photos || []).filter(isNotNewMain);
+    const updatedMedia = (currentUser?.media || []).filter(isNotNewMain);
+    const updatedVideos = (currentUser?.videos || []).filter(isNotNewMain);
 
-    const updatedMedia = Array.isArray(currentUser?.media) ? [...currentUser.media] : [];
-    if (updatedMedia.length > 0) {
-      updatedMedia[0] = imageUrl;
-    } else {
-      updatedMedia.push(imageUrl);
-    }
-
-    const updatedVideos = Array.isArray(currentUser?.videos) ? [...currentUser.videos] : [];
-    if (isBackendVideoUrl(imageUrl) && !updatedVideos.includes(imageUrl)) {
-      updatedVideos.push(imageUrl);
-    }
+    const updatedMediaTimestamps = { ...(currentUser?.mediaTimestamps || {}) };
+    updatedMediaTimestamps[imageUrl] = new Date().toISOString();
 
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
@@ -1424,15 +1468,21 @@ exports.uploadMainPhoto = async (req, res) => {
           photos: updatedPhotos,
           media: updatedMedia,
           videos: updatedVideos,
+          mediaTimestamps: updatedMediaTimestamps,
         },
       },
       { new: true }
     ).select('-password');
 
+    const uploadTime = updatedMediaTimestamps[imageUrl] || new Date().toISOString();
     return res.status(200).json({
       success: true,
-      message: 'Main profile image/video updated successfully',
+      message: 'Main profile image updated successfully',
       profileImage: imageUrl,
+      url: imageUrl,
+      secure_url: imageUrl,
+      uploadedAt: uploadTime,
+      mediaTimestamps: updatedMediaTimestamps,
       user: updatedUser,
     });
   } catch (error) {
@@ -1553,6 +1603,9 @@ exports.uploadGalleryMedia = async (req, res) => {
       }
     }
 
+    const updatedMediaTimestamps = { ...(currentUser?.mediaTimestamps || {}) };
+    updatedMediaTimestamps[mediaUrl] = new Date().toISOString();
+
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
@@ -1561,11 +1614,13 @@ exports.uploadGalleryMedia = async (req, res) => {
           profileImages: profileImagesArr,
           media: mediaArr,
           videos: videosArr,
+          mediaTimestamps: updatedMediaTimestamps,
         },
       },
       { new: true }
     ).select('-password');
 
+    const uploadTime = updatedMediaTimestamps[mediaUrl] || new Date().toISOString();
     return res.status(200).json({
       success: true,
       message: `Gallery slot #${slotIndex + 1} updated successfully`,
@@ -1573,6 +1628,8 @@ exports.uploadGalleryMedia = async (req, res) => {
       url: mediaUrl,
       secure_url: mediaUrl,
       slotIndex,
+      uploadedAt: uploadTime,
+      mediaTimestamps: updatedMediaTimestamps,
       user: updatedUser,
     });
   } catch (error) {
@@ -1616,6 +1673,11 @@ exports.removeGalleryMedia = async (req, res) => {
     const cleanProfileImages = profileImagesArr.filter(cleanFilter);
     const cleanVideos = (currentUser?.videos || []).filter(cleanFilter);
 
+    const updatedMediaTimestamps = { ...(currentUser?.mediaTimestamps || {}) };
+    if (targetUrl && updatedMediaTimestamps[targetUrl]) {
+      delete updatedMediaTimestamps[targetUrl];
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
       {
@@ -1625,6 +1687,7 @@ exports.removeGalleryMedia = async (req, res) => {
           media: cleanMedia,
           videos: cleanVideos,
           profileImage: currentUser.profileImage === targetUrl ? (cleanProfileImages[0] || null) : currentUser.profileImage,
+          mediaTimestamps: updatedMediaTimestamps,
         },
       },
       { new: true }

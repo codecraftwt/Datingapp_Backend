@@ -458,8 +458,6 @@ exports.getMatches = async (req, res) => {
   try {
     const currentUserId = req.user._id;
 
-
-    const blockedIds = await getBlockedUserIds(currentUserId);
     const currentUser = await User.findById(currentUserId);
     const currentUserCoords = getUserCoordinates(currentUser);
 
@@ -469,7 +467,23 @@ exports.getMatches = async (req, res) => {
     const peopleWhoLikedMe = await Match.find({ likedId: currentUserId });
     const likerIds = peopleWhoLikedMe.map(l => l.likerId.toString());
 
-    const mutualMatchIds = likedIds.filter(id => likerIds.includes(id) && !blockedIds.includes(id));
+    // Include ALL mutual matches regardless of block status so names are always available
+    const mutualMatchIds = likedIds.filter(id => likerIds.includes(id));
+
+    // Fetch block records to annotate each match (not to filter them out)
+    const blockRecords = await Block.find({
+      $or: [
+        { blockerId: currentUserId },
+        { blockedId: currentUserId }
+      ]
+    }).lean();
+
+    const iBlockedSet = new Set(
+      blockRecords.filter(b => b.blockerId.toString() === currentUserId.toString()).map(b => b.blockedId.toString())
+    );
+    const blockedMeSet = new Set(
+      blockRecords.filter(b => b.blockedId.toString() === currentUserId.toString()).map(b => b.blockerId.toString())
+    );
 
     const users = await User.find({
       _id: { $in: mutualMatchIds }
@@ -477,9 +491,10 @@ exports.getMatches = async (req, res) => {
 
     return res.status(200).json({
       matches: users.map(u => {
+        const uIdStr = u._id.toString();
         const targetUserCoords = getUserCoordinates(u);
         return {
-          id: u._id.toString(),
+          id: uIdStr,
           name: u.firstName || u.name,
           email: u.email,
           age: u.age || null,
@@ -505,6 +520,9 @@ exports.getMatches = async (req, res) => {
           isEmailVerified: !!u.isEmailVerified,
           isMobileVerified: !!u.isMobileVerified,
           lastSeen: u.lastSeen || u.updatedAt || u.createdAt,
+          // Block flags — for UI only, not to hide the name
+          isBlocked: iBlockedSet.has(uIdStr),
+          isBlockedByOther: blockedMeSet.has(uIdStr),
         };
       })
     });
@@ -513,6 +531,7 @@ exports.getMatches = async (req, res) => {
     return res.status(500).json({ message: 'Server error while fetching matches.' });
   }
 };
+
 
 /**
  * Reject a user's like (delete the like record from them to me)
@@ -850,7 +869,8 @@ exports.unblockUser = async (req, res) => {
 
     const io = req.app.get('io') || global.io;
     if (io) {
-      io.emit('user_unblocked_by_other', { blockerId: currentUserId?.toString(), targetUserId: targetUserIdStr });
+      // Emit only to the user who was unblocked (targetUserId = Ram), not to everyone
+      io.to(targetUserIdStr).emit('user_unblocked_by_other', { blockerId: currentUserId?.toString(), targetUserId: targetUserIdStr });
     }
 
     return res.status(200).json({
