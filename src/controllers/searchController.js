@@ -14,15 +14,31 @@ const isBackendVideoUrl = (url) => {
 
 const checkIsOnline = (user) => {
   if (!user) return false;
+
+  // 1. Condition 1: Must be logged in
+  if (user.isLoggedIn !== true) return false;
+
   const uIdStr = (user._id || user.id || user).toString();
-  if (global.onlineUsers && global.onlineUsers.has(uIdStr)) return true;
+
+  // 2. Conditions 2 & 3: Inside App + Network On
+  const socketId = global.onlineUsers ? global.onlineUsers.get(uIdStr) : null;
+  const socketObj = (socketId && global.io && global.io.sockets && global.io.sockets.sockets)
+    ? global.io.sockets.sockets.get(socketId)
+    : null;
+  const isSocketConnected = !!(socketObj && socketObj.connected);
+
+  let inRoom = false;
   if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
-    if (rm && rm.size > 0) return true;
+    if (rm && rm.size > 0) inRoom = true;
   }
-  if (user.isOnline === true) return true;
-  if (user.isLoggedIn === true && user.lastSeen && (Date.now() - new Date(user.lastSeen).getTime() < 300000)) return true;
-  return false;
+
+  const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
+  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
+
+  const isInsideAppWithNetwork = isSocketConnected || inRoom || hasRecentHeartbeat;
+
+  return isInsideAppWithNetwork;
 };
 
 const extractUploadTimeFromUrl = (url, fallback) => {

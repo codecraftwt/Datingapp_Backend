@@ -226,20 +226,39 @@ exports.getAllRegisteredUsers = async (req, res) => {
 
     // Sort order setup
 /**
- * Helper to check if a user is currently online (ONLY if user has live socket connection inside app)
+ * Helper to check if a user is currently online:
+ * Condition 1: Logged in (user.isLoggedIn === true).
+ * Condition 2: Inside app (socket registered / connected).
+ * Condition 3: Network on (live socket connection and fresh presence heartbeat < 35s).
+ * ALL THREE conditions must be TRUE.
  */
 const checkIsOnline = (user) => {
   if (!user) return false;
+
+  // 1. Condition 1: Must be logged in
+  if (user.isLoggedIn !== true) return false;
+
   const uIdStr = (user._id || user.id || user).toString();
-  const inMap = !!(global.onlineUsers && global.onlineUsers.has(uIdStr));
+
+  // 2. Conditions 2 & 3: Inside App + Network On
+  const socketId = global.onlineUsers ? global.onlineUsers.get(uIdStr) : null;
+  const socketObj = (socketId && global.io && global.io.sockets && global.io.sockets.sockets)
+    ? global.io.sockets.sockets.get(socketId)
+    : null;
+  const isSocketConnected = !!(socketObj && socketObj.connected);
+
   let inRoom = false;
   if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
     const rm = global.io.sockets.adapter.rooms.get(uIdStr);
     if (rm && rm.size > 0) inRoom = true;
   }
-  const isDbOnline = user.isOnline === true;
-  const isUserLoggedIn = user.isLoggedIn === true;
-  return inMap || inRoom || isDbOnline || isUserLoggedIn;
+
+  const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
+  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
+
+  const isInsideAppWithNetwork = isSocketConnected || inRoom || hasRecentHeartbeat;
+
+  return isInsideAppWithNetwork;
 };
 
     const sortOrder = order === 'asc' ? 1 : -1;
@@ -274,10 +293,7 @@ const checkIsOnline = (user) => {
       };
     });
 
-    const onlineUsersCount = Math.max(
-      global.onlineUsers ? global.onlineUsers.size : 0,
-      activeOnlineCalcCount
-    );
+    const onlineUsersCount = activeOnlineCalcCount;
 
     return res.status(200).json({
       success: true,

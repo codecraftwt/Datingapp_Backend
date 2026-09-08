@@ -126,6 +126,8 @@ if (mongoose.connection.readyState === 0) {
           { $expr: { $eq: ['$reporterId', '$reportedId'] } },
           { $set: { reporterId: null } }
         );
+        // Reset stale isOnline flags upon server start/restart so users only show online with active socket
+        await User.updateMany({ isOnline: true }, { $set: { isOnline: false } });
         console.log('Successfully sanitized existing database documents, verification flags, and report records.');
       } catch (cleanErr) {
         console.error('Geo cleanup error:', cleanErr);
@@ -204,6 +206,7 @@ const extractUserIdStr = (val) => {
 const onlineUsers = new Map();
 const userLastPing = new Map();
 global.onlineUsers = onlineUsers;
+global.userLastPing = userLastPing;
 
 // Background Worker: Automatically cleanup stale presence for users whose network disconnected
 setInterval(async () => {
