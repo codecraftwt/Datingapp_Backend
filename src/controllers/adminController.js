@@ -235,17 +235,15 @@ exports.getAllRegisteredUsers = async (req, res) => {
 const checkIsOnline = (user) => {
   if (!user) return false;
 
-  // 1. Condition 1: Must be logged in
-  if (user.isLoggedIn !== true) return false;
+  // Condition 1: User is logged in
+  if (user.isLoggedIn === false) return false;
 
   const uIdStr = (user._id || user.id || user).toString();
 
-  // 2. Conditions 2 & 3: Inside App + Network On
-  const socketId = global.onlineUsers ? global.onlineUsers.get(uIdStr) : null;
-  const socketObj = (socketId && global.io && global.io.sockets && global.io.sockets.sockets)
-    ? global.io.sockets.sockets.get(socketId)
-    : null;
-  const isSocketConnected = !!(socketObj && socketObj.connected);
+  // Condition 2: Active inside app (Socket connected, joined room, or active presence ping in memory)
+  const hasOnlineUserMap = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
+  const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
+  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
 
   let inRoom = false;
   if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
@@ -253,13 +251,28 @@ const checkIsOnline = (user) => {
     if (rm && rm.size > 0) inRoom = true;
   }
 
-  const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
-  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
+  const isLiveActiveInApp = hasOnlineUserMap || inRoom || hasRecentHeartbeat;
 
-  const isInsideAppWithNetwork = isSocketConnected || inRoom || hasRecentHeartbeat;
+  // Condition 3: Network ON (Live active in app OR isOnline in DB with fresh lastSeen < 35 seconds)
+  const lastSeenDate = user.lastSeen ? new Date(user.lastSeen) : null;
+  const hasFreshLastSeen = !!(lastSeenDate && (Date.now() - lastSeenDate.getTime() < 35000));
+  const isDbOnlineFresh = (user.isOnline === true) && hasFreshLastSeen;
 
-  return isInsideAppWithNetwork;
+  const finalIsOnline = isLiveActiveInApp || isDbOnlineFresh;
+
+  console.log(`🔍 [ADMIN ONLINE EVALUATION] User "${uIdStr}" (${user.email || user.name || 'User'}):`, {
+    Condition1_LoggedIn: user.isLoggedIn !== false,
+    Condition2_LiveActiveInApp: isLiveActiveInApp,
+    Condition3_DbOnlineFresh: isDbOnlineFresh,
+    FINAL_STATUS: finalIsOnline ? 'Online 🟢' : 'Offline 🔴'
+  });
+
+  return finalIsOnline;
 };
+
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
     const sortOrder = order === 'asc' ? 1 : -1;
     const sortObj = { [sortBy]: sortOrder };

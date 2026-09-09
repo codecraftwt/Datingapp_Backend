@@ -14,10 +14,30 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET || 'VYck0A_t17ivmkR6DQApA_FU_Nk',
 });
 
+const checkIsOnline = (user) => {
+  if (!user) return false;
+  const uIdStr = (user._id || user.id || user).toString();
+  const hasOnlineUserMap = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
+  const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
+  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 40000));
+
+  let inRoom = false;
+  if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
+    const rm = global.io.sockets.adapter.rooms.get(uIdStr);
+    if (rm && rm.size > 0) inRoom = true;
+  }
+
+  const hasActiveSession = hasOnlineUserMap || inRoom || hasRecentHeartbeat || (user.isOnline === true && user.isLoggedIn !== false);
+  const cond1_isLoggedIn = (user.isLoggedIn !== false) || user.isOnline === true || hasActiveSession;
+  const cond2_activeInApp = hasActiveSession;
+  const cond3_networkOn = hasActiveSession;
+
+  return cond1_isLoggedIn && cond2_activeInApp && cond3_networkOn;
+};
+
 /**
  * Get all chat messages involving the authenticated user.
- * Also returns a `conversationPartners` map (userId -> { name, image }) so the
- * chat list always has real names regardless of block status.
+ * Also returns a `conversationPartners` map (userId -> { name, image, isOnline, lastSeen })
  */
 exports.getMessages = async (req, res) => {
   try {
@@ -40,10 +60,10 @@ exports.getMessages = async (req, res) => {
       if (rId && rId !== currentUserIdStr) partnerIdSet.add(rId);
     });
 
-    // Fetch partner user records in one batch query (no block filtering — just raw name/image)
+    // Fetch partner user records in one batch query
     const partnerUsers = await User.find(
       { _id: { $in: Array.from(partnerIdSet) } },
-      'firstName name profileImage isOnline lastSeen'
+      'firstName name profileImage isLoggedIn isOnline lastSeen'
     ).lean();
 
     const conversationPartners = {};
@@ -53,7 +73,7 @@ exports.getMessages = async (req, res) => {
         id: uId,
         name: u.firstName || u.name || null,
         image: u.profileImage || null,
-        isOnline: !!u.isOnline,
+        isOnline: checkIsOnline(u),
         lastSeen: u.lastSeen,
       };
     });

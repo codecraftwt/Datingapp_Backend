@@ -26,19 +26,18 @@ const isBackendVideoUrl = (url) => {
 };
 
 const checkIsOnline = (user) => {
-  if (!user) return false;
+  if (!user) {
+    console.log('🔍 [ONLINE STATUS EVALUATION] No user provided -> FINAL STATUS: Offline');
+    return false;
+  }
 
-  // 1. Condition 1: Must be logged in
-  if (user.isLoggedIn !== true) return false;
+  if (user.isLoggedIn === false) return false;
 
   const uIdStr = (user._id || user.id || user).toString();
 
-  // 2. Conditions 2 & 3: Inside App + Network On
-  const socketId = global.onlineUsers ? global.onlineUsers.get(uIdStr) : null;
-  const socketObj = (socketId && global.io && global.io.sockets && global.io.sockets.sockets)
-    ? global.io.sockets.sockets.get(socketId)
-    : null;
-  const isSocketConnected = !!(socketObj && socketObj.connected);
+  const hasOnlineUserMap = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
+  const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
+  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
 
   let inRoom = false;
   if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
@@ -46,12 +45,22 @@ const checkIsOnline = (user) => {
     if (rm && rm.size > 0) inRoom = true;
   }
 
-  const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
-  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
+  const isLiveActiveInApp = hasOnlineUserMap || inRoom || hasRecentHeartbeat;
 
-  const isInsideAppWithNetwork = isSocketConnected || inRoom || hasRecentHeartbeat;
+  const lastSeenDate = user.lastSeen ? new Date(user.lastSeen) : null;
+  const hasFreshLastSeen = !!(lastSeenDate && (Date.now() - lastSeenDate.getTime() < 35000));
+  const isDbOnlineFresh = (user.isOnline === true) && hasFreshLastSeen;
 
-  return isInsideAppWithNetwork;
+  const finalIsOnline = isLiveActiveInApp || isDbOnlineFresh;
+
+  console.log(`🔍 [ONLINE STATUS EVALUATION] User "${uIdStr}" (${user.email || user.name || 'User'}):`, {
+    Condition1_LoggedIn: user.isLoggedIn !== false,
+    Condition2_LiveActiveInApp: isLiveActiveInApp,
+    Condition3_DbOnlineFresh: isDbOnlineFresh,
+    FINAL_STATUS: finalIsOnline ? 'Online 🟢' : 'Offline 🔴'
+  });
+
+  return finalIsOnline;
 };
 
 const extractUploadTimeFromUrl = (url, fallback) => {
@@ -1077,17 +1086,39 @@ exports.updatePresence = async (req, res) => {
     const userId = req.user._id;
     const now = new Date();
     const uIdStr = userId.toString();
+    const setOnline = req.body?.isOnline !== false;
 
-    if (global.onlineUsers) {
-      global.onlineUsers.set(uIdStr, true);
+    if (setOnline) {
+      if (global.onlineUsers) {
+        global.onlineUsers.set(uIdStr, true);
+      }
+      if (global.userLastPing) {
+        global.userLastPing.set(uIdStr, Date.now());
+      }
+      await User.findByIdAndUpdate(userId, { isLoggedIn: true, isOnline: true, lastSeen: now });
+
+      if (global.io) {
+        global.io.emit('user_status', { userId: uIdStr, status: 'online', isOnline: true });
+      }
+
+      console.log(`🔄 [API UPDATE PRESENCE] User "${uIdStr}" status updated via API to -> Online 🟢`);
+      return res.status(200).json({ success: true, isOnline: true, lastSeen: now });
+    } else {
+      if (global.onlineUsers) {
+        global.onlineUsers.delete(uIdStr);
+      }
+      if (global.userLastPing) {
+        global.userLastPing.delete(uIdStr);
+      }
+      await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: now });
+
+      if (global.io) {
+        global.io.emit('user_status', { userId: uIdStr, status: 'offline', isOnline: false, lastSeen: now.toISOString() });
+      }
+
+      console.log(`🔄 [API UPDATE PRESENCE] User "${uIdStr}" status updated via API to -> Offline 🔴`);
+      return res.status(200).json({ success: true, isOnline: false, lastSeen: now });
     }
-    await User.findByIdAndUpdate(userId, { isLoggedIn: true, isOnline: true, lastSeen: now });
-
-    if (global.io) {
-      global.io.emit('user_status', { userId: uIdStr, status: 'online', isOnline: true });
-    }
-
-    return res.status(200).json({ success: true, isOnline: true, lastSeen: now });
   } catch (error) {
     console.error('Error updating presence:', error);
     return res.status(500).json({ success: false, message: 'Server error updating presence.' });
@@ -1100,6 +1131,10 @@ exports.updatePresence = async (req, res) => {
  */
 exports.getOnlineStatusMap = async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     const activeSocketIds = global.onlineUsers ? Array.from(global.onlineUsers.keys()) : [];
     
     // Fetch users whose isOnline is true or lastSeen within last 5 minutes
@@ -1143,6 +1178,10 @@ exports.getOnlineStatusMap = async (req, res) => {
  */
 exports.getUserOnlineStatus = async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     const targetUserId = req.params.userId;
     if (!targetUserId) return res.status(400).json({ message: 'Missing userId parameter' });
 
