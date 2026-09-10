@@ -47,16 +47,11 @@ const checkIsOnline = (user) => {
 
   const isLiveActiveInApp = hasOnlineUserMap || inRoom || hasRecentHeartbeat;
 
-  const lastSeenDate = user.lastSeen ? new Date(user.lastSeen) : null;
-  const hasFreshLastSeen = !!(lastSeenDate && (Date.now() - lastSeenDate.getTime() < 35000));
-  const isDbOnlineFresh = (user.isOnline === true) && hasFreshLastSeen;
-
-  const finalIsOnline = isLiveActiveInApp || isDbOnlineFresh;
+  const finalIsOnline = isLiveActiveInApp;
 
   console.log(`🔍 [ONLINE STATUS EVALUATION] User "${uIdStr}" (${user.email || user.name || 'User'}):`, {
     Condition1_LoggedIn: user.isLoggedIn !== false,
     Condition2_LiveActiveInApp: isLiveActiveInApp,
-    Condition3_DbOnlineFresh: isDbOnlineFresh,
     FINAL_STATUS: finalIsOnline ? 'Online 🟢' : 'Offline 🔴'
   });
 

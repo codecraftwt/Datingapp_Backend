@@ -14,10 +14,12 @@ const isBackendVideoUrl = (url) => {
 
 const checkIsOnline = (user) => {
   if (!user) return false;
+  if (user.isLoggedIn === false) return false;
   const uIdStr = (user._id || user.id || user).toString();
+
   const hasOnlineUserMap = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
   const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
-  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 40000));
+  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
 
   let inRoom = false;
   if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
@@ -25,12 +27,15 @@ const checkIsOnline = (user) => {
     if (rm && rm.size > 0) inRoom = true;
   }
 
-  const hasActiveSession = hasOnlineUserMap || inRoom || hasRecentHeartbeat || (user.isOnline === true && user.isLoggedIn !== false);
-  const cond1_isLoggedIn = (user.isLoggedIn !== false) || user.isOnline === true || hasActiveSession;
-  const cond2_activeInApp = hasActiveSession;
-  const cond3_networkOn = hasActiveSession;
+  const hasActiveSession = hasOnlineUserMap || inRoom || hasRecentHeartbeat;
 
-  return cond1_isLoggedIn && cond2_activeInApp && cond3_networkOn;
+  console.log(`🔍 [SEARCH ONLINE EVALUATION] User "${uIdStr}" (${user.email || user.name || 'User'}):`, {
+    Condition1_LoggedIn: user.isLoggedIn !== false,
+    Condition2_LiveActiveInApp: hasActiveSession,
+    FINAL_STATUS: hasActiveSession ? 'Online 🟢' : 'Offline 🔴'
+  });
+
+  return hasActiveSession;
 };
 
 const extractUploadTimeFromUrl = (url, fallback) => {
@@ -232,7 +237,8 @@ exports.advancedSearch = async (req, res) => {
     }
 
     // Gender Filter
-    const targetGender = gender || currentUser.interestedIn;
+    const userInterestedIn = currentUser.interestedIn || 'Everyone';
+    const targetGender = (gender && gender !== 'Default') ? gender : userInterestedIn;
     if (targetGender && targetGender !== 'Everyone' && targetGender !== 'All') {
       if (targetGender === 'Women' || targetGender === 'Female') {
         mongoQuery.gender = { $in: ['Women', 'Female', 'Woman'] };
@@ -372,9 +378,10 @@ exports.advancedSearch = async (req, res) => {
       }
 
       // Calculate distance in kilometers
-      const distanceKmVal = u.calculatedDistanceMeters
-        ? parseFloat((u.calculatedDistanceMeters / 1000).toFixed(1))
-        : null;
+      const distanceKmVal =
+        u.calculatedDistanceMeters !== undefined && u.calculatedDistanceMeters !== null
+          ? parseFloat((u.calculatedDistanceMeters / 1000).toFixed(1))
+          : null;
       u.calculatedDistanceKm = distanceKmVal;
 
       // Intersect interests & languages

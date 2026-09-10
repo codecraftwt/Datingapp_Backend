@@ -16,10 +16,12 @@ cloudinary.config({
 
 const checkIsOnline = (user) => {
   if (!user) return false;
+  if (user.isLoggedIn === false) return false;
   const uIdStr = (user._id || user.id || user).toString();
+
   const hasOnlineUserMap = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
   const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
-  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 40000));
+  const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
 
   let inRoom = false;
   if (global.io && global.io.sockets && global.io.sockets.adapter && global.io.sockets.adapter.rooms.has(uIdStr)) {
@@ -27,12 +29,8 @@ const checkIsOnline = (user) => {
     if (rm && rm.size > 0) inRoom = true;
   }
 
-  const hasActiveSession = hasOnlineUserMap || inRoom || hasRecentHeartbeat || (user.isOnline === true && user.isLoggedIn !== false);
-  const cond1_isLoggedIn = (user.isLoggedIn !== false) || user.isOnline === true || hasActiveSession;
-  const cond2_activeInApp = hasActiveSession;
-  const cond3_networkOn = hasActiveSession;
-
-  return cond1_isLoggedIn && cond2_activeInApp && cond3_networkOn;
+  const hasActiveSession = hasOnlineUserMap || inRoom || hasRecentHeartbeat;
+  return hasActiveSession;
 };
 
 /**

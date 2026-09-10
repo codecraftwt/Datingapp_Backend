@@ -253,17 +253,11 @@ const checkIsOnline = (user) => {
 
   const isLiveActiveInApp = hasOnlineUserMap || inRoom || hasRecentHeartbeat;
 
-  // Condition 3: Network ON (Live active in app OR isOnline in DB with fresh lastSeen < 35 seconds)
-  const lastSeenDate = user.lastSeen ? new Date(user.lastSeen) : null;
-  const hasFreshLastSeen = !!(lastSeenDate && (Date.now() - lastSeenDate.getTime() < 35000));
-  const isDbOnlineFresh = (user.isOnline === true) && hasFreshLastSeen;
-
-  const finalIsOnline = isLiveActiveInApp || isDbOnlineFresh;
+  const finalIsOnline = isLiveActiveInApp;
 
   console.log(`🔍 [ADMIN ONLINE EVALUATION] User "${uIdStr}" (${user.email || user.name || 'User'}):`, {
     Condition1_LoggedIn: user.isLoggedIn !== false,
     Condition2_LiveActiveInApp: isLiveActiveInApp,
-    Condition3_DbOnlineFresh: isDbOnlineFresh,
     FINAL_STATUS: finalIsOnline ? 'Online 🟢' : 'Offline 🔴'
   });
 
