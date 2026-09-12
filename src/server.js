@@ -147,6 +147,7 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const searchRoutes = require('./routes/searchRoutes');
 const questionnaireRoutes = require('./routes/questionnaireRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const subscriptionRoutes = require('./routes/subscriptionRoutes');
 
 // URL Normalization Middleware (fixes double slashes and trailing slashes causing 404s)
 app.use((req, res, next) => {
@@ -160,7 +161,8 @@ app.use((req, res, next) => {
 });
 
 app.use('/api/auth', authRoutes);
-app.use(['/api/profile', '/api/profil'], profileRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/profil', profileRoutes);
 app.use('/api/questionnaire', questionnaireRoutes);
 app.use('/api/questionnaires', questionnaireRoutes);
 app.use('/api/chat', chatRoutes);
@@ -169,6 +171,8 @@ app.use('/api/user', matchRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/subscription', subscriptionRoutes);
 
 // Direct Global Presence Endpoint Fallback
 app.all(['/api/profile/presence', '/api/presence', '/api/user/presence', '/api/auth/presence', '/presence'], auth, (req, res, next) => {
