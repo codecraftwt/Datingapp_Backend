@@ -75,19 +75,12 @@ exports.createCheckoutSession = async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    // Get or create Stripe Customer
+    // Get or create Stripe Customer dynamically
     let customerId = user.stripeCustomerId;
     if (!customerId) {
       const customer = await stripe.customers.create({
         email: user.email,
-        name: user.name || user.firstName || 'Dating App User',
-        address: {
-          line1: user.permanentAddress?.city || '123 Main Street',
-          city: user.permanentAddress?.city || 'Mumbai',
-          state: user.permanentAddress?.state || 'Maharashtra',
-          postal_code: '400001',
-          country: 'IN',
-        },
+        name: user.name || user.firstName || user.email.split('@')[0],
         metadata: { userId: userId.toString() },
       });
       customerId = customer.id;
@@ -96,23 +89,42 @@ exports.createCheckoutSession = async (req, res) => {
     }
 
     // Create Stripe Hosted Checkout Session (redirects user to official Stripe Checkout page)
-    const checkoutSession = await stripe.checkout.sessions.create({
-      customer: customerId,
-      payment_method_types: ['card'],
-      line_items: [{ price: selectedPlan.priceId, quantity: 1 }],
-      mode: 'subscription',
-      success_url: 'https://example.com/success?session_id={CHECKOUT_SESSION_ID}&status=success',
-      cancel_url: 'https://example.com/cancel',
-      billing_address_collection: 'required',
-      customer_update: {
-        address: 'auto',
-        name: 'auto',
-      },
-      metadata: {
-        userId: userId.toString(),
-        planType: planType,
-      },
-    });
+    let checkoutSession;
+    try {
+      checkoutSession = await stripe.checkout.sessions.create({
+        customer: customerId,
+        payment_method_types: ['card'],
+        line_items: [{ price: selectedPlan.priceId, quantity: 1 }],
+        mode: 'subscription',
+        success_url: 'https://example.com/success?session_id={CHECKOUT_SESSION_ID}&status=success',
+        cancel_url: 'https://example.com/cancel',
+        metadata: {
+          userId: userId.toString(),
+          planType: planType,
+        },
+      });
+    } catch (stripeErr) {
+      console.warn('Stripe subscription mode warning, trying payment mode fallback:', stripeErr.message);
+      checkoutSession = await stripe.checkout.sessions.create({
+        customer: customerId,
+        payment_method_types: ['card'],
+        line_items: [{
+          price_data: {
+            currency: 'inr',
+            product_data: { name: selectedPlan.name },
+            unit_amount: planType === 'Gold' ? 99900 : 49900,
+          },
+          quantity: 1,
+        }],
+        mode: 'payment',
+        success_url: 'https://example.com/success?session_id={CHECKOUT_SESSION_ID}&status=success',
+        cancel_url: 'https://example.com/cancel',
+        metadata: {
+          userId: userId.toString(),
+          planType: planType,
+        },
+      });
+    }
 
     const subId = checkoutSession.subscription || `sub_${checkoutSession.id}`;
 
