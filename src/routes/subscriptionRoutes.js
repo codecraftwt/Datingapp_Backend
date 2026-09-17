@@ -6,6 +6,10 @@ const subscriptionController = require('../controllers/subscriptionController');
 // Public route to fetch available subscription plans & public key
 router.get('/plans', subscriptionController.getSubscriptionPlans);
 
+// Public redirect pages for Checkout completion
+router.get('/success-page', subscriptionController.handleSuccessPage);
+router.get('/cancel-page', subscriptionController.handleCancelPage);
+
 // Webhook route for Stripe events
 router.post('/webhook', express.raw({ type: 'application/json' }), subscriptionController.handleWebhook);
 

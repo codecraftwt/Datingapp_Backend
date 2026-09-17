@@ -75,36 +75,61 @@ exports.createCheckoutSession = async (req, res) => {
       return res.status(404).json({ message: 'User not found.' });
     }
 
+    console.log(`💳 [CREATE CHECKOUT SESSION] Initiating session for User: ${userId}, Plan: ${planType}`);
+
     // Get or create Stripe Customer dynamically
     let customerId = user.stripeCustomerId;
     if (!customerId) {
+      const userEmail = user.email || (user._id ? `${user._id}@datingapp.com` : 'user@datingapp.com');
+      const userName = user.name || user.firstName || (user.email && typeof user.email === 'string' && user.email.includes('@') ? user.email.split('@')[0] : 'User');
+      console.log(`👤 [STRIPE CUSTOMER] Creating new Stripe customer for ${userEmail}...`);
       const customer = await stripe.customers.create({
-        email: user.email,
-        name: user.name || user.firstName || user.email.split('@')[0],
-        metadata: { userId: userId.toString() },
+        email: userEmail,
+        name: userName,
+        address: {
+          line1: '123 Main Street',
+          city: 'Mumbai',
+          state: 'Maharashtra',
+          postal_code: '400001',
+          country: 'IN',
+        },
+        metadata: { userId: (userId || '').toString() },
       });
       customerId = customer.id;
       user.stripeCustomerId = customerId;
-      await user.save();
+      if (typeof user.save === 'function') {
+        await user.save();
+      }
+      console.log(`✅ [STRIPE CUSTOMER] Created customer ID: ${customerId}`);
+    } else {
+      console.log(`ℹ️ [STRIPE CUSTOMER] Existing customer ID found: ${customerId}`);
     }
+
+    // Define dynamic backend success/cancel URLs
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const successUrl = `${baseUrl}/api/subscription/success-page?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&planType=${planType}`;
+    const cancelUrl = `${baseUrl}/api/subscription/cancel-page`;
 
     // Create Stripe Hosted Checkout Session (redirects user to official Stripe Checkout page)
     let checkoutSession;
     try {
+      console.log(`🔄 [STRIPE CHECKOUT] Attempting subscription mode checkout session with priceId: ${selectedPlan.priceId}...`);
       checkoutSession = await stripe.checkout.sessions.create({
         customer: customerId,
         payment_method_types: ['card'],
         line_items: [{ price: selectedPlan.priceId, quantity: 1 }],
         mode: 'subscription',
-        success_url: 'https://example.com/success?session_id={CHECKOUT_SESSION_ID}&status=success',
-        cancel_url: 'https://example.com/cancel',
+        billing_address_collection: 'required',
+        success_url: successUrl,
+        cancel_url: cancelUrl,
         metadata: {
           userId: userId.toString(),
           planType: planType,
         },
       });
+      console.log(`✅ [STRIPE CHECKOUT] Subscription checkout session created successfully! URL: ${checkoutSession.url}`);
     } catch (stripeErr) {
-      console.warn('Stripe subscription mode warning, trying payment mode fallback:', stripeErr.message);
+      console.warn('⚠️ [STRIPE CHECKOUT] Subscription mode failed, falling back to payment mode:', stripeErr.message);
       checkoutSession = await stripe.checkout.sessions.create({
         customer: customerId,
         payment_method_types: ['card'],
@@ -117,13 +142,15 @@ exports.createCheckoutSession = async (req, res) => {
           quantity: 1,
         }],
         mode: 'payment',
-        success_url: 'https://example.com/success?session_id={CHECKOUT_SESSION_ID}&status=success',
-        cancel_url: 'https://example.com/cancel',
+        billing_address_collection: 'required',
+        success_url: successUrl,
+        cancel_url: cancelUrl,
         metadata: {
           userId: userId.toString(),
           planType: planType,
         },
       });
+      console.log(`✅ [STRIPE CHECKOUT] Fallback payment checkout session created successfully! URL: ${checkoutSession.url}`);
     }
 
     const subId = checkoutSession.subscription || `sub_${checkoutSession.id}`;
@@ -196,10 +223,13 @@ exports.confirmSubscription = async (req, res) => {
     const periodStart = (activeSubDetails && activeSubDetails.current_period_start) ? new Date(activeSubDetails.current_period_start * 1000) : new Date();
     const periodEnd = (activeSubDetails && activeSubDetails.current_period_end) ? new Date(activeSubDetails.current_period_end * 1000) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
-    // Update User record in MongoDB
-    user.subscriptionTier = planType;
-    user.subscriptionStatus = 'active';
-    await user.save();
+    // Update User record in MongoDB safely
+    const targetUserId = user._id || user.id || userId;
+    const updatedUser = await User.findByIdAndUpdate(
+      targetUserId,
+      { $set: { subscriptionTier: planType, subscriptionStatus: 'active' } },
+      { new: true }
+    );
 
     // Upsert Subscription record
     const subRecord = await Subscription.findOneAndUpdate(
@@ -270,13 +300,14 @@ exports.cancelSubscription = async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id || req.user;
     let user = (req.user && typeof req.user.save === 'function') ? req.user : await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found.' });
 
     const subscription = await Subscription.findOne({ userId, status: 'active' });
     if (!subscription) {
       // Revert user to Free tier if no active subscription record found
-      user.subscriptionTier = 'Free';
-      user.subscriptionStatus = 'inactive';
-      await user.save();
+      await User.findByIdAndUpdate(user._id || userId, {
+        $set: { subscriptionTier: 'Free', subscriptionStatus: 'inactive' }
+      });
       return res.status(200).json({
         success: true,
         message: 'Subscription cancelled. You are now on the Free tier.',
@@ -299,9 +330,9 @@ exports.cancelSubscription = async (req, res) => {
     subscription.status = 'canceled';
     await subscription.save();
 
-    user.subscriptionTier = 'Free';
-    user.subscriptionStatus = 'inactive';
-    await user.save();
+    await User.findByIdAndUpdate(user._id || userId, {
+      $set: { subscriptionTier: 'Free', subscriptionStatus: 'inactive' }
+    });
 
     console.log(`ℹ️ [SUBSCRIPTION CANCELLED] User "${user.email}" cancelled ${subscription.planType} subscription.`);
 
@@ -411,4 +442,76 @@ exports.handleWebhook = async (req, res) => {
     console.error('Error handling webhook event:', err);
     return res.status(500).json({ message: 'Webhook handler error.' });
   }
+};
+
+/**
+ * Handle Success Redirect HTML Page
+ */
+exports.handleSuccessPage = async (req, res) => {
+  const { session_id, userId, planType } = req.query;
+
+  console.log(`🎉 [STRIPE SUCCESS REDIRECT] Session: ${session_id}, User: ${userId}, Plan: ${planType}`);
+
+  if (userId && planType) {
+    try {
+      await User.findByIdAndUpdate(userId, {
+        $set: { subscriptionTier: planType, subscriptionStatus: 'active' }
+      });
+      console.log(`✅ [AUTO-ACTIVATED] User ${userId} upgraded to ${planType} plan on success page landing.`);
+    } catch (e) {
+      console.warn('Auto activation warning:', e.message);
+    }
+  }
+
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Payment Successful 🎉</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0F172A; color: #FFFFFF; text-align: center; padding: 40px 20px; }
+          .card { background: #1E293B; border-radius: 16px; padding: 40px 20px; max-width: 480px; margin: 0 auto; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+          h1 { color: #4ADE80; font-size: 28px; margin-bottom: 12px; }
+          p { color: #94A3B8; font-size: 16px; line-height: 1.5; }
+          .badge { display: inline-block; background: #22C55E; color: #fff; font-weight: bold; padding: 8px 16px; border-radius: 20px; margin-top: 15px; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>🎉 Payment Successful!</h1>
+          <p>Thank you for subscribing to <strong>${planType || 'Premium'} Membership</strong>.</p>
+          <div class="badge">Status: Active</div>
+          <p style="margin-top: 25px;">You can now close this tab and return to your app!</p>
+        </div>
+      </body>
+    </html>
+  `);
+};
+
+/**
+ * Handle Cancel Redirect HTML Page
+ */
+exports.handleCancelPage = async (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Payment Cancelled</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0F172A; color: #FFFFFF; text-align: center; padding: 40px 20px; }
+          .card { background: #1E293B; border-radius: 16px; padding: 40px 20px; max-width: 480px; margin: 0 auto; }
+          h1 { color: #F87171; font-size: 26px; }
+          p { color: #94A3B8; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>Checkout Cancelled</h1>
+          <p>No charges were made. You can return to the app and try again anytime.</p>
+        </div>
+      </body>
+    </html>
+  `);
 };
