@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const matchController = require('../controllers/matchController');
 const auth = require('../middleware/auth');
+const { checkSwipeLimit, checkSuperLikeLimit } = require('../middleware/featureAccess');
 
-router.post('/like', auth, matchController.likeUser);
-router.post('/superlike', auth, matchController.superLikeUser);
+router.post('/like', auth, checkSwipeLimit, matchController.likeUser);
+router.post('/superlike', auth, checkSuperLikeLimit, matchController.superLikeUser);
 router.get('/likes', auth, matchController.getLikes);
 router.get('/superlike-status', auth, matchController.getSuperLikeStatus);
 router.get('/matches', auth, matchController.getMatches);

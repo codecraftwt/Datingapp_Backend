@@ -118,6 +118,13 @@ const UserSchema = new mongoose.Schema(
     subscriptionTier: { type: String, enum: ['Free', 'Gold', 'Premium'], default: 'Free' },
     subscriptionStatus: { type: String, default: 'inactive' },
     stripeCustomerId: { type: String, default: null },
+    dailySwipeCount: { type: Number, default: 0 },
+    lastSwipeReset: { type: Date, default: Date.now },
+    dailySuperLikesCount: { type: Number, default: 0 },
+    lastSuperLikeReset: { type: Date, default: Date.now },
+    lastMonthlyBoost: { type: Date, default: null },
+    isBoostActive: { type: Boolean, default: false },
+    boostExpiresAt: { type: Date, default: null },
     emailOtp: { type: String },
     emailOtpExpires: { type: Date },
     warnings: [

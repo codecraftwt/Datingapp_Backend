@@ -423,7 +423,35 @@ exports.getLikes = async (req, res) => {
     // Sort Super Liked users to the top of the list!
     mappedUsers.sort((a, b) => (b.isSuperLike ? 1 : 0) - (a.isSuperLike ? 1 : 0));
 
+    const tier = currentUser.subscriptionTier || 'Free';
+    const isFreeTier = tier === 'Free';
+
+    if (isFreeTier) {
+      return res.status(200).json({
+        success: true,
+        isLocked: true,
+        tier: 'Free',
+        totalLikesCount: mappedUsers.length,
+        message: 'Upgrade to Gold or Premium to unblur and see who liked your profile!',
+        users: mappedUsers.map((u, idx) => ({
+          id: `blurred_${idx}_${u.id.substring(0, 4)}`,
+          realId: u.id,
+          name: 'Someone Liked You',
+          age: null,
+          image: u.image || u.profileImage || '',
+          profileImage: u.image || u.profileImage || '',
+          isBlurred: true,
+          isSuperLike: u.isSuperLike,
+          distance: u.distance,
+        })),
+      });
+    }
+
     return res.status(200).json({
+      success: true,
+      isLocked: false,
+      tier: tier,
+      totalLikesCount: mappedUsers.length,
       users: mappedUsers
     });
   } catch (error) {

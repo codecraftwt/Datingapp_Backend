@@ -34,6 +34,7 @@ router.post('/test-fcm-push', auth, profileController.testFcmPush);
 router.get(['/my-reports', '/reports/my'], auth, profileController.getMyReports);
 router.get('/active-warning', auth, profileController.getActiveWarning);
 router.post('/acknowledge-warning', auth, profileController.acknowledgeWarning);
+router.post(['/activate-boost', '/boost'], auth, profileController.activateProfileBoost);
 
 router.put(['/hide-media', '/hide'], auth, profileController.hideProfileMedia);
 router.post(['/hide-media', '/hide'], auth, profileController.hideProfileMedia);

@@ -2196,3 +2196,145 @@ exports.updateProfileVisibility = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Server error while updating profile visibility.' });
   }
 };
+
+/**
+ * Update User Location / Passport Location (Enforces Passport Access Control)
+ */
+exports.updateLocation = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { latitude, longitude, city, country, isPassport } = req.body;
+
+    const currentUser = await User.findById(userId);
+    if (!currentUser) return res.status(404).json({ message: 'User not found.' });
+
+    const tier = currentUser.subscriptionTier || 'Free';
+
+    // Passport mode restriction: Only Gold and Premium members can use custom Passport location
+    if (isPassport && tier === 'Free') {
+      return res.status(403).json({
+        success: false,
+        code: 'PASSPORT_LOCKED',
+        message: 'Passport location feature is exclusive to Gold & Premium members. Upgrade to unlock global location changing!',
+      });
+    }
+
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+
+    if (isNaN(lat) || isNaN(lng)) {
+      return res.status(400).json({ message: 'Invalid coordinates provided.' });
+    }
+
+    const locationObj = {
+      type: 'Point',
+      coordinates: [lng, lat],
+    };
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        $set: {
+          'currentLocation.location': locationObj,
+          'currentLocation.city': city || currentUser.currentLocation?.city,
+          'currentLocation.country': country || currentUser.currentLocation?.country,
+          'currentLocation.isPassport': !!isPassport,
+          'currentLocation.updatedAt': new Date(),
+          location: locationObj,
+        }
+      },
+      { returnDocument: 'after' }
+    ).select('-password');
+
+    return res.status(200).json({
+      success: true,
+      message: isPassport ? 'Passport location updated successfully!' : 'Location updated successfully!',
+      location: updatedUser.currentLocation,
+    });
+  } catch (error) {
+    console.error('Update location error:', error);
+    return res.status(500).json({ message: 'Failed to update location.' });
+  }
+};
+
+/**
+ * Clear current custom location / Reset Passport
+ */
+exports.clearCurrentLocation = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const currentUser = await User.findById(userId);
+    if (!currentUser) return res.status(404).json({ message: 'User not found.' });
+
+    const permCoords = currentUser.permanentAddress?.location;
+
+    await User.findByIdAndUpdate(userId, {
+      $set: {
+        currentLocation: null,
+        location: permCoords || currentUser.location,
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Passport location reset to permanent address.',
+    });
+  } catch (error) {
+    console.error('Clear location error:', error);
+    return res.status(500).json({ message: 'Failed to reset location.' });
+  }
+};
+
+/**
+ * Activate 30-Minute Profile Boost (Exclusive to Premium Tier)
+ */
+exports.activateProfileBoost = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const currentUser = await User.findById(userId);
+    if (!currentUser) return res.status(404).json({ message: 'User not found.' });
+
+    const tier = currentUser.subscriptionTier || 'Free';
+
+    if (tier !== 'Premium') {
+      return res.status(403).json({
+        success: false,
+        code: 'BOOST_LOCKED',
+        message: 'Monthly Free Profile Boost is an exclusive Premium tier feature. Upgrade to Premium to activate Boosts!',
+      });
+    }
+
+    const now = new Date();
+    if (currentUser.lastMonthlyBoost) {
+      const lastBoostDate = new Date(currentUser.lastMonthlyBoost);
+      const daysDiff = (now - lastBoostDate) / (1000 * 60 * 60 * 24);
+      if (daysDiff < 30) {
+        const nextAvailableInDays = Math.ceil(30 - daysDiff);
+        return res.status(403).json({
+          success: false,
+          code: 'BOOST_COOLDOWN',
+          message: `Your monthly free boost has already been used. Next boost available in ${nextAvailableInDays} days!`,
+        });
+      }
+    }
+
+    const boostExpiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes boost duration
+
+    await User.findByIdAndUpdate(userId, {
+      $set: {
+        isBoostActive: true,
+        boostExpiresAt: boostExpiresAt,
+        lastMonthlyBoost: now,
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: '🚀 Profile Boost Activated! Your profile is now boosted at the top of swipe decks for 30 minutes.',
+      boostExpiresAt,
+    });
+  } catch (error) {
+    console.error('Activate Profile Boost Error:', error);
+    return res.status(500).json({ message: 'Failed to activate profile boost.' });
+  }
+};

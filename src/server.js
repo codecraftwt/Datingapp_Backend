@@ -149,13 +149,25 @@ const questionnaireRoutes = require('./routes/questionnaireRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
 
-// URL Normalization Middleware (fixes double slashes and trailing slashes causing 404s)
+// High-Visibility Global HTTP Request & Response Logger for All Subscription Endpoints
 app.use((req, res, next) => {
-  if (req.url && req.url.includes('//')) {
-    req.url = req.url.replace(/\/+/g, '/');
-  }
-  if (req.url && req.url.length > 1 && req.url.endsWith('/')) {
-    req.url = req.url.slice(0, -1);
+  const start = Date.now();
+  const url = req.originalUrl || req.url || '';
+  if (url.includes('subscrip') || url.includes('checkout') || url.includes('confirm') || url.includes('success') || url.includes('cancel')) {
+    console.log(`\n==================================================`);
+    console.log(`🌐 [API INCOMING] ${req.method} ${url} at ${new Date().toLocaleTimeString()}`);
+    console.log(`🔑 [AUTH HEADER]`, req.headers.authorization ? 'Bearer Token Present' : 'NO AUTH HEADER');
+    if (Object.keys(req.query || {}).length > 0) {
+      console.log(`🔍 [QUERY PARAMS]`, req.query);
+    }
+    if (req.body && Object.keys(req.body).length > 0) {
+      console.log(`📦 [REQUEST BODY]`, req.body);
+    }
+    
+    res.on('finish', () => {
+      console.log(`🏁 [API RESPONSE] ${req.method} ${url} -> Status: ${res.statusCode} (${Date.now() - start}ms)`);
+      console.log(`==================================================\n`);
+    });
   }
   next();
 });
@@ -726,7 +738,11 @@ io.on('connection', (socket) => {
 
 // Global Express Real-Time Error Handler Middleware
 app.use((err, req, res, next) => {
-  console.error(`[REAL-TIME ERROR HANDLER] ${req.method} ${req.originalUrl} - Error:`, err);
+  console.error(`\n❌❌❌ [GLOBAL EXPRESS ERROR HANDLER] ❌❌❌`);
+  console.error(`▶ Route: ${req.method} ${req.originalUrl || req.url}`);
+  console.error(`▶ Error Message:`, err.message || err);
+  console.error(`▶ Stack Trace:\n`, err.stack || 'No stack trace available');
+  console.error(`❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n`);
 
   if (!res.headersSent) {
     const statusCode = err.status || err.statusCode || 500;
@@ -740,17 +756,28 @@ app.use((err, req, res, next) => {
 
 // Real-Time Process-Level Crash Protection
 process.on('uncaughtException', (err) => {
-  console.error('[CRITICAL] Uncaught Exception intercepted in real-time:', err);
+  console.error('💥 [CRITICAL UNCAUGHT EXCEPTION]:', err);
+  console.error(err.stack);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[CRITICAL] Unhandled Promise Rejection intercepted in real-time:', reason);
+  console.error('💥 [CRITICAL UNHANDLED REJECTION]:', reason);
 });
 
 // Start Server using http.Server
 if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`\n==================================================`);
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`💳 Subscription Routes Mounted:`);
+    console.log(`   - GET  /api/subscriptions/plans`);
+    console.log(`   - POST /api/subscriptions/create-checkout-session`);
+    console.log(`   - POST /api/subscriptions/confirm`);
+    console.log(`   - GET  /api/subscriptions/my-subscription`);
+    console.log(`   - POST /api/subscriptions/cancel`);
+    console.log(`   - GET  /api/subscriptions/success-page`);
+    console.log(`   - POST /api/subscriptions/webhook`);
+    console.log(`==================================================\n`);
   });
 }
 
