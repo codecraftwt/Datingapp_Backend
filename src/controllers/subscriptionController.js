@@ -150,6 +150,7 @@ exports.createCheckoutSession = async (req, res) => {
       cancelUrl = `${protocol}://${host}/api/subscriptions/cancel-page`;
     }
 
+    const baseUrl = `${protocol}://${host}`;
     console.log(`📌 [BACKEND SUBSCRIPTION STEP 4: URLS_GENERATED] Base: ${baseUrl}, Success: ${successUrl}`);
 
     // Create standard Stripe Hosted Checkout Session (displays full card number, expiry, CVC entry UI)
