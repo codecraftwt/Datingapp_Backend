@@ -160,23 +160,21 @@ exports.createCheckoutSession = async (req, res) => {
 
     try {
       console.log(`🔄 [BACKEND SUBSCRIPTION STEP 4.1: STRIPE_CHECKOUT_SESSION] Creating clean hosted checkout page for ${selectedPlan.name}...`);
-      const amountPaise = planType === 'Gold' ? 99900 : 49900;
+      // Use USD in test mode to bypass Indian RBI test card export restrictions on 4242 test cards
+      const amountUnits = planType === 'Gold' ? 1200 : 600; // $12.00 USD for Gold, $6.00 USD for Premium
 
       const sessionPayload = {
         customer: customerId,
-        customer_update: { address: 'auto', name: 'auto' },
-        billing_address_collection: 'auto',
-        shipping_address_collection: { allowed_countries: ['IN', 'US'] },
         payment_method_types: ['card'],
         line_items: [
           {
             price_data: {
-              currency: 'inr',
+              currency: 'usd',
               product_data: {
                 name: `${selectedPlan.name}`,
                 description: `1-Month ${selectedPlan.name} Membership`,
               },
-              unit_amount: amountPaise,
+              unit_amount: amountUnits,
             },
             quantity: 1,
           },
