@@ -166,6 +166,9 @@ exports.createCheckoutSession = async (req, res) => {
         customer_update: { address: 'auto', name: 'auto' },
         billing_address_collection: 'required',
         payment_method_types: ['card'],
+        payment_intent_data: {
+          description: `1-Month ${selectedPlan.name} Subscription`,
+        },
         line_items: [
           {
             price_data: {
