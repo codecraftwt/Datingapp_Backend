@@ -163,7 +163,7 @@ exports.createCheckoutSession = async (req, res) => {
       const amountPaise = planType === 'Gold' ? 99900 : 49900;
 
       const sessionPayload = {
-        customer_email: user.email || undefined,
+        customer: customerId,
         payment_method_types: ['card'],
         line_items: [
           {
