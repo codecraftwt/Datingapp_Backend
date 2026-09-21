@@ -165,7 +165,8 @@ exports.createCheckoutSession = async (req, res) => {
       const sessionPayload = {
         customer: customerId,
         customer_update: { address: 'auto', name: 'auto' },
-        billing_address_collection: 'required',
+        billing_address_collection: 'auto',
+        shipping_address_collection: { allowed_countries: ['IN', 'US'] },
         payment_method_types: ['card'],
         line_items: [
           {
