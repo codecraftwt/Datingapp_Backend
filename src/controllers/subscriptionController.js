@@ -138,14 +138,12 @@ exports.createCheckoutSession = async (req, res) => {
       protocol = 'https';
     }
 
-    // Stripe Hosted Checkout requires a valid HTTPS public return URL. Use checkout.stripe.dev for test mode or PUBLIC_API_URL / live host in production.
-    let successUrl = `https://checkout.stripe.dev/success?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&planType=${planType}`;
-    let cancelUrl = `https://checkout.stripe.dev/cancel`;
+    // Stripe Hosted Checkout requires a valid public HTTPS return URL
+    const livePublicUrl = process.env.PUBLIC_API_URL || 'https://datingapp-backend-api.vercel.app';
+    let successUrl = `${livePublicUrl}/api/subscriptions/success-page?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&planType=${planType}`;
+    let cancelUrl = `${livePublicUrl}/api/subscriptions/cancel-page`;
 
-    if (process.env.PUBLIC_API_URL) {
-      successUrl = `${process.env.PUBLIC_API_URL}/api/subscriptions/success-page?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&planType=${planType}`;
-      cancelUrl = `${process.env.PUBLIC_API_URL}/api/subscriptions/cancel-page`;
-    } else if (host.includes('vercel.app') || host.includes('herokuapp.com') || host.includes('render.com')) {
+    if (host.includes('vercel.app') || host.includes('herokuapp.com') || host.includes('render.com')) {
       successUrl = `${protocol}://${host}/api/subscriptions/success-page?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&planType=${planType}`;
       cancelUrl = `${protocol}://${host}/api/subscriptions/cancel-page`;
     }
@@ -165,6 +163,8 @@ exports.createCheckoutSession = async (req, res) => {
 
       const sessionPayload = {
         customer: customerId,
+        customer_update: { address: 'auto', name: 'auto' },
+        billing_address_collection: 'required',
         payment_method_types: ['card'],
         line_items: [
           {
