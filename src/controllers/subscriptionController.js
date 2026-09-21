@@ -160,8 +160,8 @@ exports.createCheckoutSession = async (req, res) => {
 
     try {
       console.log(`🔄 [BACKEND SUBSCRIPTION STEP 4.1: STRIPE_CHECKOUT_SESSION] Creating clean hosted checkout page for ${selectedPlan.name}...`);
-      // Use USD in test mode to bypass Indian RBI test card export restrictions on 4242 test cards
-      const amountUnits = planType === 'Gold' ? 1200 : 600; // $12.00 USD for Gold, $6.00 USD for Premium
+      // Required for Indian Individual Stripe Accounts: Currency MUST be INR
+      const amountPaise = planType === 'Gold' ? 99900 : 49900; // ₹999 for Gold, ₹499 for Premium
 
       const sessionPayload = {
         customer: customerId,
@@ -169,12 +169,12 @@ exports.createCheckoutSession = async (req, res) => {
         line_items: [
           {
             price_data: {
-              currency: 'usd',
+              currency: 'inr',
               product_data: {
                 name: `${selectedPlan.name}`,
                 description: `1-Month ${selectedPlan.name} Membership`,
               },
-              unit_amount: amountUnits,
+              unit_amount: amountPaise,
             },
             quantity: 1,
           },
