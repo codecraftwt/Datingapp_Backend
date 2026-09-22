@@ -9,8 +9,8 @@ const PLAN_CONFIG = {
     priceId: process.env.STRIPE_GOLD_PRICE_ID || 'price_1UE3LnSGA5udBfcNKNBvbHv8',
     name: 'Gold Membership',
     tier: 'Gold',
-    priceAmount: '₹999',
-    priceDisplay: '₹999 / month',
+    priceAmount: '$9.99',
+    priceDisplay: '$9.99 / month',
     features: [
       'Unlimited Likes & Swipes',
       'See Who Liked Your Profile',
@@ -23,8 +23,8 @@ const PLAN_CONFIG = {
     priceId: process.env.STRIPE_PREMIUM_PRICE_ID || 'price_1UE3KpSGA5udBfcNnAqb54o1',
     name: 'Premium Membership',
     tier: 'Premium',
-    priceAmount: '₹499',
-    priceDisplay: '₹499 / month',
+    priceAmount: '$4.99',
+    priceDisplay: '$4.99 / month',
     features: [
       'All Gold Tier Features Included',
       '1 Free Monthly Profile Boost',
@@ -132,24 +132,28 @@ exports.createCheckoutSession = async (req, res) => {
     }
 
     // Define reliable backend success/cancel URLs for Checkout session completion
+    // Support Live Production Base URL or dynamic request host
     const host = req.get('host') || 'localhost:5000';
     let protocol = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
     if (host.includes('vercel.app') || host.includes('herokuapp.com') || host.includes('render.com') || host.includes('railway.app') || host.includes('.com') || host.includes('.app')) {
       protocol = 'https';
     }
 
-    // Stripe Hosted Checkout requires a valid public HTTPS return URL
-    const livePublicUrl = process.env.PUBLIC_API_URL || 'https://datingapp-backend-api.vercel.app';
-    let successUrl = `${livePublicUrl}/api/subscriptions/success-page?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&planType=${planType}`;
-    let cancelUrl = `${livePublicUrl}/api/subscriptions/cancel-page`;
-
-    if (host.includes('vercel.app') || host.includes('herokuapp.com') || host.includes('render.com')) {
-      successUrl = `${protocol}://${host}/api/subscriptions/success-page?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&planType=${planType}`;
-      cancelUrl = `${protocol}://${host}/api/subscriptions/cancel-page`;
+    // Use PUBLIC_API_URL if defined in .env, otherwise build from request host
+    let baseApiUrl = process.env.PUBLIC_API_URL;
+    if (!baseApiUrl) {
+      if (protocol === 'http' && !host.includes('localhost') && !host.includes('127.0.0.1')) {
+        const port = host.includes(':') ? host.split(':')[1] : '5000';
+        baseApiUrl = `http://localhost:${port}`;
+      } else {
+        baseApiUrl = `${protocol}://${host}`;
+      }
     }
 
-    const baseUrl = `${protocol}://${host}`;
-    console.log(`📌 [BACKEND SUBSCRIPTION STEP 4: URLS_GENERATED] Base: ${baseUrl}, Success: ${successUrl}`);
+    let successUrl = `${baseApiUrl}/api/subscriptions/success-page?session_id={CHECKOUT_SESSION_ID}&userId=${userId}&planType=${planType}`;
+    let cancelUrl = `${baseApiUrl}/api/subscriptions/cancel-page`;
+
+    console.log(`📌 [BACKEND SUBSCRIPTION STEP 4: URLS_GENERATED] Base: ${baseApiUrl}, Success: ${successUrl}`);
 
     // Create standard Stripe Hosted Checkout Session (displays full card number, expiry, CVC entry UI)
     let targetCheckoutUrl = '';
@@ -158,26 +162,21 @@ exports.createCheckoutSession = async (req, res) => {
 
     try {
       console.log(`🔄 [BACKEND SUBSCRIPTION STEP 4.1: STRIPE_CHECKOUT_SESSION] Creating clean hosted checkout page for ${selectedPlan.name}...`);
-      // Required for Indian Individual Stripe Accounts: Currency MUST be INR
-      const amountPaise = planType === 'Gold' ? 99900 : 49900; // ₹999 for Gold, ₹499 for Premium
+      // Stripe Checkout session payload configured for USD currency
+      const amountCents = planType === 'Gold' ? 999 : 499; // $9.99 for Gold, $4.99 for Premium
 
       const sessionPayload = {
         customer: customerId,
-        customer_update: { address: 'auto', name: 'auto' },
-        billing_address_collection: 'required',
         payment_method_types: ['card'],
-        payment_intent_data: {
-          description: `1-Month ${selectedPlan.name} Subscription`,
-        },
         line_items: [
           {
             price_data: {
-              currency: 'inr',
+              currency: 'usd',
               product_data: {
                 name: `${selectedPlan.name}`,
                 description: `1-Month ${selectedPlan.name} Membership`,
               },
-              unit_amount: amountPaise,
+              unit_amount: amountCents,
             },
             quantity: 1,
           },
@@ -622,4 +621,55 @@ exports.handleCancelPage = async (req, res) => {
       </body>
     </html>
   `);
+};
+
+/**
+ * Real-time Status Inspector Endpoint
+ */
+exports.checkSessionStatus = async (req, res) => {
+  try {
+    const { sessionId } = req.query;
+    console.log(`🔍 [BACKEND STATUS CHECK] Inspecting session ${sessionId}...`);
+
+    let session = null;
+    let paymentIntent = null;
+
+    if (sessionId && sessionId.startsWith('cs_')) {
+      try {
+        session = await stripe.checkout.sessions.retrieve(sessionId, {
+          expand: ['payment_intent'],
+        });
+        if (session.payment_intent && typeof session.payment_intent === 'object') {
+          paymentIntent = session.payment_intent;
+        }
+      } catch (sErr) {
+        console.warn('⚠️ Could not retrieve session:', sErr.message);
+      }
+    } else if (sessionId && (sessionId.startsWith('pi_') || sessionId.startsWith('sub_pi_'))) {
+      const piId = sessionId.replace('sub_', '');
+      try {
+        paymentIntent = await stripe.paymentIntents.retrieve(piId);
+      } catch (piErr) {
+        console.warn('⚠️ Could not retrieve payment intent:', piErr.message);
+      }
+    }
+
+    const lastError = paymentIntent?.last_payment_error?.message || null;
+    const piStatus = paymentIntent?.status || 'unknown';
+    const paymentStatus = session?.payment_status || (piStatus === 'succeeded' ? 'paid' : 'unpaid');
+
+    console.log(`📊 [BACKEND STATUS CHECK RESULT] Payment Status: ${paymentStatus}, PI Status: ${piStatus}, Error: "${lastError || 'None'}"`);
+
+    return res.status(200).json({
+      success: true,
+      sessionStatus: session?.status || 'open',
+      paymentStatus: paymentStatus,
+      piStatus: piStatus,
+      lastError: lastError,
+      message: lastError ? `Stripe Error: ${lastError}` : `Session status: ${paymentStatus}`,
+    });
+  } catch (error) {
+    console.error('❌ [BACKEND STATUS CHECK ERROR]:', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
 };

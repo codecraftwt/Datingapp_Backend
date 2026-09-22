@@ -47,4 +47,9 @@ router.post('/cancel', auth, (req, res, next) => {
   next();
 }, subscriptionController.cancelSubscription);
 
+router.get('/check-session-status', auth, (req, res, next) => {
+  console.log('🔍 [ROUTE MATCHED] GET /api/subscriptions/check-session-status by User:', req.user?._id || req.user?.id);
+  next();
+}, subscriptionController.checkSessionStatus);
+
 module.exports = router;
