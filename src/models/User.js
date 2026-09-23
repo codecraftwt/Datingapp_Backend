@@ -115,7 +115,7 @@ const UserSchema = new mongoose.Schema(
     isVerified: { type: Boolean, default: false },
     isEmailVerified: { type: Boolean, default: false },
     isMobileVerified: { type: Boolean, default: false },
-    subscriptionTier: { type: String, enum: ['Free', 'Gold', 'Premium'], default: 'Free' },
+    subscriptionTier: { type: String, default: 'Free', trim: true },
     subscriptionStatus: { type: String, default: 'inactive' },
     stripeCustomerId: { type: String, default: null },
     dailySwipeCount: { type: Number, default: 0 },

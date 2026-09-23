@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
+const featureController = require('../controllers/featureController');
+const planController = require('../controllers/planController');
 
 // 1. Admin Registration API Endpoint
 router.post('/register', adminController.registerAdmin);
@@ -19,5 +21,17 @@ router.put('/reports/:reportId', adminController.updateReportStatus);
 
 // 6. Admin Issue Warning to Reported User API Endpoint
 router.post('/warn-user', adminController.warnUser);
+
+// --- Dynamic Feature Management APIs ---
+router.post('/features', featureController.createFeature);
+router.get('/features', featureController.getAllFeatures);
+router.put('/features/:id', featureController.updateFeature);
+router.delete('/features/:id', featureController.deleteFeature);
+
+// --- Dynamic Subscription Plan Management APIs ---
+router.post('/plans', planController.createPlan);
+router.get('/plans', planController.getAllPlans);
+router.put('/plans/:id', planController.updatePlan);
+router.delete('/plans/:id', planController.deletePlan);
 
 module.exports = router;

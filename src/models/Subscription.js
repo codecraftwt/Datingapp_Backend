@@ -27,8 +27,8 @@ const SubscriptionSchema = new mongoose.Schema(
     },
     planType: {
       type: String,
-      enum: ['Gold', 'Premium'],
       required: true,
+      trim: true,
     },
     status: {
       type: String,

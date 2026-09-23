@@ -5,6 +5,7 @@ const Message = require('../models/Message');
 const Block = require('../models/Block');
 const Report = require('../models/Report');
 const Notification = require('../models/Notification');
+const Plan = require('../models/Plan');
 const { sendPushNotification } = require('../services/pushNotificationService');
 
 /**
@@ -408,15 +409,29 @@ exports.getLikes = async (req, res) => {
     mappedUsers.sort((a, b) => (b.isSuperLike ? 1 : 0) - (a.isSuperLike ? 1 : 0));
 
     const tier = currentUser.subscriptionTier || 'Free';
-    const isFreeTier = tier === 'Free';
+    let canSeeLikes = tier !== 'Free';
 
-    if (isFreeTier) {
+    if (tier !== 'Free') {
+      try {
+        const plan = await Plan.findOne({ planKey: tier, isActive: true });
+        if (plan) {
+          const likesFeat = plan.features?.find((f) => f.featureKey === 'SEE_WHO_LIKED_YOU');
+          if (likesFeat) {
+            canSeeLikes = !!likesFeat.isAllowed;
+          }
+        }
+      } catch (e) {
+        canSeeLikes = tier !== 'Free';
+      }
+    }
+
+    if (!canSeeLikes) {
       return res.status(200).json({
         success: true,
         isLocked: true,
-        tier: 'Free',
+        tier: tier,
         totalLikesCount: mappedUsers.length,
-        message: 'Upgrade to Gold or Premium to unblur and see who liked your profile!',
+        message: 'Upgrade your subscription to unblur and see who liked your profile!',
         users: mappedUsers.map((u, idx) => ({
           id: `blurred_${idx}_${u.id.substring(0, 4)}`,
           realId: u.id,
@@ -453,7 +468,25 @@ exports.getSuperLikeStatus = async (req, res) => {
     const now = new Date();
 
     const tier = user?.subscriptionTier || 'Free';
-    const limit = tier === 'Premium' ? 1 : (tier === 'Gold' ? 5 : 0);
+    let limit = 0;
+
+    if (tier !== 'Free') {
+      try {
+        const plan = await Plan.findOne({ planKey: tier, isActive: true });
+        if (plan) {
+          const slFeat = plan.features?.find((f) => f.featureKey === 'SUPER_LIKES');
+          if (slFeat && slFeat.isAllowed) {
+            limit = slFeat.limitValue || 0;
+          }
+        } else if (tier === 'Gold') {
+          limit = 5;
+        } else if (tier === 'Premium') {
+          limit = 1;
+        }
+      } catch (e) {
+        limit = tier === 'Gold' ? 5 : (tier === 'Premium' ? 1 : 0);
+      }
+    }
 
     const lastReset = user?.lastSuperLikeReset ? new Date(user.lastSuperLikeReset) : new Date(0);
     const hoursPassed = (now - lastReset) / (1000 * 60 * 60);

@@ -2,6 +2,7 @@ const Stripe = require('stripe');
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
+const Plan = require('../models/Plan');
 
 const PLAN_CONFIG = {
   Gold: {
@@ -35,17 +36,69 @@ const PLAN_CONFIG = {
 };
 
 /**
- * Get available subscription plans configuration
+ * Get available subscription plans configuration (Dynamic from MongoDB)
  */
 exports.getSubscriptionPlans = async (req, res) => {
   console.log('📌 [BACKEND SUBSCRIPTION STEP 1: GET_PLANS] Fetching available subscription plans & Stripe publishable key...');
   try {
     const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_51UIPtESNVBh57Ub9dg7BgWRA8KgUvVfkFtyov0Etl0OCG3Uh3Xjrj39wr5C3FhO60Zes39Ioi9kDAROGYP3PPqpD00oCTzeHvY';
-    console.log('✅ [BACKEND SUBSCRIPTION STEP 1: GET_PLANS SUCCESS] Returning plans:', Object.keys(PLAN_CONFIG));
+
+    // Fetch live active plans from MongoDB Plan collection
+    const dbPlans = await Plan.find({ isActive: true }).sort({ displayOrder: 1, price: 1 });
+
+    const finalPlans = { ...PLAN_CONFIG };
+    const dynamicPlansList = [];
+
+    if (dbPlans && dbPlans.length > 0) {
+      dbPlans.forEach((p) => {
+        const featureDescriptions = [];
+        p.features?.forEach((f) => {
+          if (f.isAllowed) {
+            if (f.featureKey === 'SWIPES') {
+              featureDescriptions.push(f.limitValue === -1 ? 'Unlimited Likes & Swipes' : `${f.limitValue} Likes per day`);
+            } else if (f.featureKey === 'SUPER_LIKES') {
+              if (f.limitValue > 0) featureDescriptions.push(`${f.limitValue} Super Likes per day`);
+            } else if (f.featureKey === 'SEE_WHO_LIKED_YOU') {
+              featureDescriptions.push('See Who Liked Your Profile');
+            } else if (f.featureKey === 'ADVANCED_SEARCH') {
+              featureDescriptions.push('Unlock All Advanced Search Filters');
+            } else if (f.featureKey === 'PROFILE_BOOST') {
+              if (f.limitValue > 0) featureDescriptions.push('1 Free Monthly Profile Boost');
+            } else {
+              featureDescriptions.push(f.featureKey.replace(/_/g, ' '));
+            }
+          }
+        });
+
+        const formattedPlan = {
+          _id: p._id,
+          productId: p.stripeProductId || (PLAN_CONFIG[p.planKey]?.productId) || '',
+          priceId: p.stripePriceId || (PLAN_CONFIG[p.planKey]?.priceId) || '',
+          name: p.name,
+          tier: p.planKey,
+          planKey: p.planKey,
+          price: p.price,
+          currency: p.currency || 'USD',
+          billingCycle: p.billingCycle || 'monthly',
+          priceAmount: `$${p.price}`,
+          priceDisplay: `$${p.price} / ${p.billingCycle || 'month'}`,
+          features: featureDescriptions,
+          rawFeatures: p.features || [],
+          highlightBadge: p.highlightBadge || '',
+          description: p.description || '',
+        };
+
+        finalPlans[p.planKey] = formattedPlan;
+        dynamicPlansList.push(formattedPlan);
+      });
+    }
+
+    console.log('✅ [BACKEND SUBSCRIPTION STEP 1: GET_PLANS SUCCESS] Returning dynamic plans:', Object.keys(finalPlans));
     return res.status(200).json({
       success: true,
       publishableKey,
-      plans: PLAN_CONFIG,
+      plans: finalPlans,
+      plansList: dynamicPlansList,
     });
   } catch (error) {
     console.error('❌ [BACKEND SUBSCRIPTION STEP 1: GET_PLANS ERROR]:', error);
@@ -64,12 +117,28 @@ exports.createCheckoutSession = async (req, res) => {
 
     console.log(`💳 [BACKEND SUBSCRIPTION STEP 2.1: PARSE_REQUEST] User ID: ${userId}, Requested Plan: "${planType}"`);
 
-    if (!planType || !PLAN_CONFIG[planType]) {
+    // Lookup plan dynamically from MongoDB Plan collection or fallback to PLAN_CONFIG
+    let dbPlan = await Plan.findOne({ planKey: planType });
+    if (!dbPlan && !PLAN_CONFIG[planType]) {
       console.warn(`⚠️ [BACKEND SUBSCRIPTION STEP 2.1: INVALID_PLAN] Invalid plan type requested: "${planType}"`);
-      return res.status(400).json({ message: 'Invalid plan type. Must be "Gold" or "Premium".' });
+      return res.status(400).json({ message: `Invalid plan type: "${planType}".` });
     }
 
-    const selectedPlan = PLAN_CONFIG[planType];
+    const planName = dbPlan ? dbPlan.name : (PLAN_CONFIG[planType]?.name || planType);
+    const rawPrice = dbPlan ? dbPlan.price : (planType === 'Gold' ? 9.99 : 4.99);
+    const amountCents = Math.round(parseFloat(rawPrice) * 100);
+    const planCurrency = (dbPlan?.currency || 'USD').toLowerCase();
+    const selectedPlan = dbPlan ? {
+      productId: dbPlan.stripeProductId || (PLAN_CONFIG[planType]?.productId) || '',
+      priceId: dbPlan.stripePriceId || (PLAN_CONFIG[planType]?.priceId) || '',
+      name: dbPlan.name,
+      tier: dbPlan.planKey,
+      priceAmount: `$${dbPlan.price}`,
+      priceDisplay: `$${dbPlan.price} / ${dbPlan.billingCycle || 'month'}`,
+      currency: dbPlan.currency || 'USD',
+      planKey: dbPlan.planKey,
+    } : PLAN_CONFIG[planType];
+
     let user = (req.user && typeof req.user.save === 'function') ? req.user : await User.findById(userId);
     if (!user && req.user) {
       const fallbackId = req.user._id || req.user.id || userId;
@@ -145,20 +214,18 @@ exports.createCheckoutSession = async (req, res) => {
     let sessionId = `cs_${Date.now()}`;
 
     try {
-      console.log(`🔄 [BACKEND SUBSCRIPTION STEP 4.1: STRIPE_CHECKOUT_SESSION] Creating clean hosted checkout page for ${selectedPlan.name}...`);
-      // Stripe Checkout session payload configured for USD currency
-      const amountCents = planType === 'Gold' ? 999 : 499; // $9.99 for Gold, $4.99 for Premium
-
+      console.log(`🔄 [BACKEND SUBSCRIPTION STEP 4.1: STRIPE_CHECKOUT_SESSION] Creating clean hosted checkout page for ${planName}...`);
+      // Stripe Checkout session payload configured for dynamic price & currency (USD)
       const sessionPayload = {
         customer: customerId,
         payment_method_types: ['card'],
         line_items: [
           {
             price_data: {
-              currency: 'usd',
+              currency: planCurrency || 'usd',
               product_data: {
-                name: `${selectedPlan.name}`,
-                description: `1-Month ${selectedPlan.name} Membership`,
+                name: `${planName}`,
+                description: `1-Month ${planName} Membership`,
               },
               unit_amount: amountCents,
             },
@@ -256,12 +323,18 @@ exports.confirmSubscription = async (req, res) => {
 
     console.log(`💳 [BACKEND SUBSCRIPTION STEP 5.1: PARSE_CONFIRM] User ID: ${userId}, Sub ID: "${subscriptionId}", Plan: "${planType}"`);
 
-    if (!planType || !PLAN_CONFIG[planType]) {
+    // Validate plan type against DB or PLAN_CONFIG
+    let dbPlan = await Plan.findOne({ planKey: planType });
+    if (!planType || (!dbPlan && !PLAN_CONFIG[planType])) {
       console.warn(`⚠️ [BACKEND SUBSCRIPTION STEP 5.1: INVALID_PLAN] Invalid plan type: "${planType}"`);
       return res.status(400).json({ message: 'Invalid plan type.' });
     }
 
-    const selectedPlan = PLAN_CONFIG[planType];
+    const selectedPlan = dbPlan ? {
+      name: dbPlan.name,
+      tier: dbPlan.planKey,
+      priceAmount: `$${dbPlan.price}`,
+    } : PLAN_CONFIG[planType];
     let user = (req.user && typeof req.user.save === 'function') ? req.user : await User.findById(userId);
     if (!user && req.user) {
       const fallbackId = req.user._id || req.user.id || userId;
@@ -351,24 +424,89 @@ exports.getMySubscription = async (req, res) => {
   console.log('📌 [BACKEND SUBSCRIPTION: GET_MY_SUBSCRIPTION] Request received.');
   try {
     const userId = req.user?._id || req.user?.id || req.user;
-    let user = (req.user && req.user.subscriptionTier !== undefined) ? req.user : await User.findById(userId).select('subscriptionTier subscriptionStatus stripeCustomerId email name');
+    let user = (req.user && req.user.subscriptionTier !== undefined) ? req.user : await User.findById(userId).select('subscriptionTier subscriptionStatus stripeCustomerId email name dailySwipeCount dailySuperLikesCount');
 
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
+    const currentTier = user.subscriptionTier || 'Free';
+    let dbPlan = await Plan.findOne({ planKey: currentTier, isActive: true });
+    if (!dbPlan && currentTier !== 'Free') {
+      dbPlan = await Plan.findOne({ planKey: currentTier });
+    }
+
+    // Default permissions (Free tier fallback)
+    const permissions = {
+      swipes: { isAllowed: true, limitValue: 2, isUnlimited: false },
+      superLikes: { isAllowed: false, limitValue: 0 },
+      search: { isAllowed: false },
+      likes: { isAllowed: false },
+    };
+
+    let featureList = [];
+
+    if (dbPlan) {
+      dbPlan.features?.forEach((f) => {
+        if (f.featureKey === 'SWIPES') {
+          permissions.swipes = {
+            isAllowed: !!f.isAllowed,
+            limitValue: f.limitValue,
+            isUnlimited: f.limitValue === -1,
+          };
+          if (f.isAllowed) {
+            featureList.push(f.limitValue === -1 ? 'Unlimited Likes & Swipes' : `${f.limitValue} Swipes per day`);
+          }
+        } else if (f.featureKey === 'SUPER_LIKES') {
+          permissions.superLikes = {
+            isAllowed: !!f.isAllowed && f.limitValue > 0,
+            limitValue: f.limitValue || 0,
+          };
+          if (f.isAllowed && f.limitValue > 0) {
+            featureList.push(`${f.limitValue} Super Likes per day`);
+          }
+        } else if (f.featureKey === 'ADVANCED_SEARCH') {
+          permissions.search = { isAllowed: !!f.isAllowed };
+          if (f.isAllowed) {
+            featureList.push('Unlock All Advanced Search Filters');
+          }
+        } else if (f.featureKey === 'SEE_WHO_LIKED_YOU') {
+          permissions.likes = { isAllowed: !!f.isAllowed };
+          if (f.isAllowed) {
+            featureList.push('See Who Liked Your Profile');
+          }
+        }
+      });
+    } else {
+      if (currentTier === 'Gold') {
+        permissions.swipes = { isAllowed: true, limitValue: -1, isUnlimited: true };
+        permissions.superLikes = { isAllowed: true, limitValue: 5 };
+        permissions.search = { isAllowed: true };
+        permissions.likes = { isAllowed: true };
+      } else if (currentTier === 'Premium') {
+        permissions.swipes = { isAllowed: true, limitValue: 3, isUnlimited: false };
+        permissions.superLikes = { isAllowed: true, limitValue: 1 };
+        permissions.search = { isAllowed: true };
+        permissions.likes = { isAllowed: true };
+      }
+    }
+
     const subscription = await Subscription.findOne({ userId, status: 'active' }).sort({ createdAt: -1 });
 
-    const currentTier = user.subscriptionTier || 'Free';
-    const planDetails = PLAN_CONFIG[currentTier] || null;
-
-    console.log(`ℹ️ [BACKEND SUBSCRIPTION: GET_MY_SUBSCRIPTION RESULT] Tier: ${currentTier}, Status: ${user.subscriptionStatus || 'inactive'}`);
+    console.log(`ℹ️ [BACKEND SUBSCRIPTION: GET_MY_SUBSCRIPTION RESULT] Tier: ${currentTier}, Search: ${permissions.search.isAllowed}, Likes: ${permissions.likes.isAllowed}, Swipes: ${permissions.swipes.isUnlimited ? 'Unlimited' : permissions.swipes.limitValue}, SuperLikes: ${permissions.superLikes.limitValue}`);
 
     return res.status(200).json({
       success: true,
       subscriptionTier: currentTier,
       subscriptionStatus: user.subscriptionStatus || 'inactive',
-      planDetails,
+      permissions,
+      features: featureList,
+      plan: dbPlan ? {
+        name: dbPlan.name,
+        planKey: dbPlan.planKey,
+        price: dbPlan.price,
+        currency: dbPlan.currency,
+        features: featureList,
+      } : null,
       subscription,
-      availablePlans: PLAN_CONFIG,
     });
   } catch (error) {
     console.error('❌ [BACKEND SUBSCRIPTION: GET_MY_SUBSCRIPTION ERROR]:', error);

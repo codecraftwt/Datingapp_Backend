@@ -1,13 +1,14 @@
 const User = require('../models/User');
+const Plan = require('../models/Plan');
 
-// Hardcoded limits (Not loaded from process.env)
+// Default fallback limits
 const FREE_SWIPE_LIMIT = 2;
 const PREMIUM_SWIPE_LIMIT = 3;
 const GOLD_SUPER_LIKE_LIMIT = 5;
 const PREMIUM_SUPER_LIKE_LIMIT = 1;
 
 /**
- * Middleware: Enforce Daily Swipe Limits for Free and Premium Tier Users
+ * Middleware: Enforce Daily Swipe Limits for Users (Dynamic by Plan)
  */
 exports.checkSwipeLimit = async (req, res, next) => {
   try {
@@ -20,12 +21,35 @@ exports.checkSwipeLimit = async (req, res, next) => {
 
     const tier = user.subscriptionTier || 'Free';
 
-    // Gold tier has Unlimited Swipes
-    if (tier === 'Gold') {
-      return next();
+    let limit = FREE_SWIPE_LIMIT;
+    let isUnlimited = false;
+
+    if (tier !== 'Free') {
+      try {
+        const plan = await Plan.findOne({ planKey: tier, isActive: true });
+        if (plan) {
+          const swipeFeat = plan.features?.find((f) => f.featureKey === 'SWIPES');
+          if (swipeFeat) {
+            if (swipeFeat.limitValue === -1) {
+              isUnlimited = true;
+            } else {
+              limit = swipeFeat.limitValue;
+            }
+          }
+        } else if (tier === 'Gold') {
+          isUnlimited = true;
+        } else if (tier === 'Premium') {
+          limit = PREMIUM_SWIPE_LIMIT;
+        }
+      } catch (e) {
+        if (tier === 'Gold') isUnlimited = true;
+      }
     }
 
-    const limit = tier === 'Premium' ? PREMIUM_SWIPE_LIMIT : FREE_SWIPE_LIMIT;
+    // Unlimited Swipes allowed for this plan
+    if (isUnlimited) {
+      return next();
+    }
 
     // Reset counter if last reset was more than 24 hours ago
     const now = new Date();
@@ -82,13 +106,31 @@ exports.checkSuperLikeLimit = async (req, res, next) => {
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
     const tier = user.subscriptionTier || 'Free';
-    const limit = tier === 'Premium' ? PREMIUM_SUPER_LIKE_LIMIT : (tier === 'Gold' ? GOLD_SUPER_LIKE_LIMIT : 0);
+    let limit = 0;
+
+    if (tier !== 'Free') {
+      try {
+        const plan = await Plan.findOne({ planKey: tier, isActive: true });
+        if (plan) {
+          const slFeat = plan.features?.find((f) => f.featureKey === 'SUPER_LIKES');
+          if (slFeat && slFeat.isAllowed) {
+            limit = slFeat.limitValue || 0;
+          }
+        } else if (tier === 'Gold') {
+          limit = GOLD_SUPER_LIKE_LIMIT;
+        } else if (tier === 'Premium') {
+          limit = PREMIUM_SUPER_LIKE_LIMIT;
+        }
+      } catch (e) {
+        limit = tier === 'Gold' ? GOLD_SUPER_LIKE_LIMIT : (tier === 'Premium' ? PREMIUM_SUPER_LIKE_LIMIT : 0);
+      }
+    }
 
     if (limit === 0) {
       return res.status(403).json({
         success: false,
         code: 'SUPER_LIKE_LOCKED',
-        message: 'Super Likes are exclusive to Gold & Premium subscribers.',
+        message: 'Super Likes are exclusive to subscribed members. Upgrade to get daily Super Likes!',
       });
     }
 
