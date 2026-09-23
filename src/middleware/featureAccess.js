@@ -1,11 +1,39 @@
 const User = require('../models/User');
 const Plan = require('../models/Plan');
+const Subscription = require('../models/Subscription');
 
 // Default fallback limits
 const FREE_SWIPE_LIMIT = 2;
 const PREMIUM_SWIPE_LIMIT = 3;
 const GOLD_SUPER_LIKE_LIMIT = 5;
 const PREMIUM_SUPER_LIKE_LIMIT = 1;
+
+/**
+ * Helper: verify if active subscription has passed its expiration date.
+ * If expired, automatically downgrade user to Free tier and inactive status in DB.
+ */
+async function getEffectiveTier(user) {
+  let tier = user.subscriptionTier || 'Free';
+  if (tier !== 'Free') {
+    try {
+      const activeSub = await Subscription.findOne({ userId: user._id || user.id, status: 'active' }).sort({ createdAt: -1 });
+      if (activeSub && activeSub.currentPeriodEnd && new Date(activeSub.currentPeriodEnd) < new Date()) {
+        console.log(`⏱️ [SUBSCRIPTION EXPIRY] Current period ended for user ${user._id}. Reverting to Free tier.`);
+        activeSub.status = 'canceled';
+        await activeSub.save();
+        await User.findByIdAndUpdate(user._id || user.id, {
+          $set: { subscriptionTier: 'Free', subscriptionStatus: 'inactive' }
+        });
+        user.subscriptionTier = 'Free';
+        user.subscriptionStatus = 'inactive';
+        tier = 'Free';
+      }
+    } catch (e) {
+      console.warn('⚠️ Error checking subscription expiry:', e.message);
+    }
+  }
+  return tier;
+}
 
 /**
  * Middleware: Enforce Daily Swipe Limits for Users (Dynamic by Plan)
@@ -19,7 +47,7 @@ exports.checkSwipeLimit = async (req, res, next) => {
       return res.status(400).json({ message: 'User not found.' });
     }
 
-    const tier = user.subscriptionTier || 'Free';
+    const tier = await getEffectiveTier(user);
 
     let limit = FREE_SWIPE_LIMIT;
     let isUnlimited = false;
@@ -105,7 +133,7 @@ exports.checkSuperLikeLimit = async (req, res, next) => {
 
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
-    const tier = user.subscriptionTier || 'Free';
+    const tier = await getEffectiveTier(user);
     let limit = 0;
 
     if (tier !== 'Free') {

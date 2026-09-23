@@ -43,8 +43,8 @@ exports.getSubscriptionPlans = async (req, res) => {
   try {
     const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_51UIPtESNVBh57Ub9dg7BgWRA8KgUvVfkFtyov0Etl0OCG3Uh3Xjrj39wr5C3FhO60Zes39Ioi9kDAROGYP3PPqpD00oCTzeHvY';
 
-    // Fetch live active plans from MongoDB Plan collection
-    const dbPlans = await Plan.find({ isActive: true }).sort({ displayOrder: 1, price: 1 });
+    // Fetch all plans from MongoDB Plan collection (active and archived)
+    const dbPlans = await Plan.find({}).sort({ displayOrder: 1, price: 1 });
 
     const finalPlans = { ...PLAN_CONFIG };
     const dynamicPlansList = [];
@@ -86,6 +86,7 @@ exports.getSubscriptionPlans = async (req, res) => {
           rawFeatures: p.features || [],
           highlightBadge: p.highlightBadge || '',
           description: p.description || '',
+          isActive: p.isActive !== false,
         };
 
         finalPlans[p.planKey] = formattedPlan;
@@ -428,7 +429,24 @@ exports.getMySubscription = async (req, res) => {
 
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
-    const currentTier = user.subscriptionTier || 'Free';
+    let currentTier = user.subscriptionTier || 'Free';
+
+    // Auto-check if active subscription period has expired past 30 days
+    if (currentTier !== 'Free') {
+      const activeSub = await Subscription.findOne({ userId, status: 'active' }).sort({ createdAt: -1 });
+      if (activeSub && activeSub.currentPeriodEnd && new Date(activeSub.currentPeriodEnd) < new Date()) {
+        console.log(`⏱️ [SUBSCRIPTION EXPIRY] Current period ended for User ${userId}. Reverting to Free tier.`);
+        activeSub.status = 'canceled';
+        await activeSub.save();
+        await User.findByIdAndUpdate(userId, {
+          $set: { subscriptionTier: 'Free', subscriptionStatus: 'inactive' }
+        });
+        currentTier = 'Free';
+        user.subscriptionTier = 'Free';
+        user.subscriptionStatus = 'inactive';
+      }
+    }
+
     let dbPlan = await Plan.findOne({ planKey: currentTier, isActive: true });
     if (!dbPlan && currentTier !== 'Free') {
       dbPlan = await Plan.findOne({ planKey: currentTier });

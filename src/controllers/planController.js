@@ -245,12 +245,11 @@ exports.updatePlan = async (req, res) => {
 
 /**
  * DELETE /api/admin/plans/:id
- * Soft-delete or deactivate plan
+ * Remove plan from database and Stripe
  */
 exports.deletePlan = async (req, res) => {
   try {
     const { id } = req.params;
-    const { permanent } = req.query;
 
     const plan = await Plan.findById(id);
     if (!plan) {
@@ -260,28 +259,51 @@ exports.deletePlan = async (req, res) => {
       });
     }
 
-    if (permanent === 'true') {
-      await Plan.findByIdAndDelete(id);
-      return res.status(200).json({
-        success: true,
-        message: `Plan "${plan.name}" permanently deleted.`,
-      });
+    console.log(`🗑️ [DELETE_PLAN] Deleting plan "${plan.name}" (${plan.planKey}) from Database and Stripe...`);
+
+    // 1. Remove / Archive from Stripe
+    if (stripe && plan.stripeProductId) {
+      try {
+        // Deactivate associated price first
+        if (plan.stripePriceId) {
+          await stripe.prices.update(plan.stripePriceId, { active: false }).catch(() => {});
+        }
+
+        // Deactivate all prices under this product
+        try {
+          const pricesList = await stripe.prices.list({ product: plan.stripeProductId });
+          for (const pr of pricesList.data) {
+            await stripe.prices.update(pr.id, { active: false }).catch(() => {});
+          }
+        } catch (_) {}
+
+        // Delete product from Stripe (or archive if it has prior transactions)
+        try {
+          await stripe.products.del(plan.stripeProductId);
+          console.log(`✅ [DELETE_PLAN] Stripe product "${plan.stripeProductId}" deleted successfully.`);
+        } catch (delErr) {
+          // If hard delete fails (e.g. user-created prices or existing subscriptions), archive it
+          await stripe.products.update(plan.stripeProductId, { active: false });
+          console.log(`ℹ️ [DELETE_PLAN] Stripe product "${plan.stripeProductId}" archived/deactivated.`);
+        }
+      } catch (stripeErr) {
+        console.warn(`⚠️ [DELETE_PLAN] Stripe cleanup warning:`, stripeErr.message);
+      }
     }
 
-    // Default: Soft deactivation
-    plan.isActive = false;
-    await plan.save();
+    // 2. Remove permanently from MongoDB Database
+    await Plan.findByIdAndDelete(id);
+    console.log(`✅ [DELETE_PLAN] Plan "${plan.name}" permanently deleted from Database.`);
 
     return res.status(200).json({
       success: true,
-      message: `Plan "${plan.name}" deactivated successfully.`,
-      plan,
+      message: `Plan "${plan.name}" deleted from database and Stripe.`,
     });
   } catch (error) {
     console.error('[PLAN CONTROLLER] Delete error:', error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to delete/deactivate plan.',
+      message: 'Failed to delete plan from database and Stripe.',
       error: error.message,
     });
   }

@@ -6,6 +6,7 @@ const Block = require('../models/Block');
 const Report = require('../models/Report');
 const Notification = require('../models/Notification');
 const Plan = require('../models/Plan');
+const Subscription = require('../models/Subscription');
 const { sendPushNotification } = require('../services/pushNotificationService');
 
 /**
@@ -406,9 +407,25 @@ exports.getLikes = async (req, res) => {
     });
 
     // Sort Super Liked users to the top of the list!
-    mappedUsers.sort((a, b) => (b.isSuperLike ? 1 : 0) - (a.isSuperLike ? 1 : 0));
+    let tier = currentUser.subscriptionTier || 'Free';
+    if (tier !== 'Free') {
+      try {
+        const activeSub = await Subscription.findOne({ userId: currentUser._id, status: 'active' }).sort({ createdAt: -1 });
+        if (activeSub && activeSub.currentPeriodEnd && new Date(activeSub.currentPeriodEnd) < new Date()) {
+          activeSub.status = 'canceled';
+          await activeSub.save();
+          await User.findByIdAndUpdate(currentUser._id, {
+            $set: { subscriptionTier: 'Free', subscriptionStatus: 'inactive' }
+          });
+          currentUser.subscriptionTier = 'Free';
+          currentUser.subscriptionStatus = 'inactive';
+          tier = 'Free';
+        }
+      } catch (e) {
+        console.warn('⚠️ Expiry check error in getLikesReceived:', e.message);
+      }
+    }
 
-    const tier = currentUser.subscriptionTier || 'Free';
     let canSeeLikes = tier !== 'Free';
 
     if (tier !== 'Free') {
