@@ -5,32 +5,31 @@ const Subscription = require('../models/Subscription');
 
 const PLAN_CONFIG = {
   Gold: {
-    productId: process.env.STRIPE_GOLD_PRODUCT_ID || 'prod_VEWOERRHV3EsTS',
-    priceId: process.env.STRIPE_GOLD_PRICE_ID || 'price_1UE3LnSGA5udBfcNKNBvbHv8',
+    productId: process.env.STRIPE_GOLD_PRODUCT_ID || 'prod_VJ21gIU9Hsv76n',
+    priceId: process.env.STRIPE_GOLD_PRICE_ID || 'price_1UIPxoSNVBh57Ub94bpA7rtZ',
     name: 'Gold Membership',
     tier: 'Gold',
-    priceAmount: '$9.99',
-    priceDisplay: '$9.99 / month',
+    priceAmount: '$9',
+    priceDisplay: '$9 / month',
     features: [
       'Unlimited Likes & Swipes',
       'See Who Liked Your Profile',
       '5 Super Likes per day',
-      'Passport Location Change',
     ],
   },
   Premium: {
-    productId: process.env.STRIPE_PREMIUM_PRODUCT_ID || 'prod_VEWNuxpAsnKkZm',
-    priceId: process.env.STRIPE_PREMIUM_PRICE_ID || 'price_1UE3KpSGA5udBfcNnAqb54o1',
+    productId: process.env.STRIPE_PREMIUM_PRODUCT_ID || 'prod_VJ211jsXBEFLpr',
+    priceId: process.env.STRIPE_PREMIUM_PRICE_ID || 'price_1UIPxESNVBh57Ub9JgqAyuuy',
     name: 'Premium Membership',
     tier: 'Premium',
-    priceAmount: '$4.99',
-    priceDisplay: '$4.99 / month',
+    priceAmount: '$5',
+    priceDisplay: '$5 / month',
     features: [
-      'All Gold Tier Features Included',
+      '3 Likes per day',
+      '1 Super Like per day',
+      'See Who Liked Your Profile',
       '1 Free Monthly Profile Boost',
-      'Priority Likes in Swipe Decks',
       'Unlock All Advanced Search Filters',
-      'Ad-Free Premium Experience',
     ],
   },
 };
@@ -41,7 +40,7 @@ const PLAN_CONFIG = {
 exports.getSubscriptionPlans = async (req, res) => {
   console.log('📌 [BACKEND SUBSCRIPTION STEP 1: GET_PLANS] Fetching available subscription plans & Stripe publishable key...');
   try {
-    const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_51OrZdzSGA5udBfcN8rWWXOK535E24Fp5njj3n1ccrwNROQKrcljjKvo7HpTNK8EwaaznhKLwZ777OfUgWwCmbB0w00lnqqp0HL';
+    const publishableKey = process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_51UIPtESNVBh57Ub9dg7BgWRA8KgUvVfkFtyov0Etl0OCG3Uh3Xjrj39wr5C3FhO60Zes39Ioi9kDAROGYP3PPqpD00oCTzeHvY';
     console.log('✅ [BACKEND SUBSCRIPTION STEP 1: GET_PLANS SUCCESS] Returning plans:', Object.keys(PLAN_CONFIG));
     return res.status(200).json({
       success: true,
@@ -84,28 +83,28 @@ exports.createCheckoutSession = async (req, res) => {
 
     console.log(`👤 [BACKEND SUBSCRIPTION STEP 2.3: USER_FOUND] User email: ${user.email}, Tier: ${user.subscriptionTier || 'Free'}`);
 
-    // Get or create Stripe Customer dynamically with full address & shipping details
+    // Get or create Stripe Customer dynamically
     let customerId = user.stripeCustomerId;
-    const defaultAddress = {
-      line1: '123 Main Street',
-      city: 'Mumbai',
-      state: 'Maharashtra',
-      postal_code: '400001',
-      country: 'IN',
-    };
+
+    if (customerId) {
+      console.log(`ℹ️ [BACKEND SUBSCRIPTION STEP 3: STRIPE_CUSTOMER_EXISTING] Customer ID found in DB: ${customerId}. Verifying in active Stripe account...`);
+      try {
+        await stripe.customers.retrieve(customerId);
+        console.log(`✅ [BACKEND SUBSCRIPTION STEP 3: STRIPE_CUSTOMER_UPDATED] Customer ${customerId} validated.`);
+      } catch (custErr) {
+        console.warn(`⚠️ [STRIPE CUSTOMER] Stale/Invalid Customer ID '${customerId}' for user ${user.email}: ${custErr.message}. Resetting...`);
+        customerId = null;
+        user.stripeCustomerId = null;
+      }
+    }
 
     if (!customerId) {
       const userEmail = user.email || (user._id ? `${user._id}@datingapp.com` : 'user@datingapp.com');
       const userName = user.name || user.firstName || (user.email && typeof user.email === 'string' && user.email.includes('@') ? user.email.split('@')[0] : 'User');
-      console.log(`👤 [BACKEND SUBSCRIPTION STEP 3: STRIPE_CUSTOMER_CREATE] Creating new Stripe customer for ${userEmail}...`);
+      console.log(`👤 [BACKEND SUBSCRIPTION STEP 3: STRIPE_CUSTOMER_CREATE] Creating fresh Stripe customer for ${userEmail}...`);
       const customer = await stripe.customers.create({
         email: userEmail,
         name: userName,
-        address: defaultAddress,
-        shipping: {
-          name: userName,
-          address: defaultAddress,
-        },
         metadata: { userId: (userId || '').toString() },
       });
       customerId = customer.id;
@@ -113,22 +112,7 @@ exports.createCheckoutSession = async (req, res) => {
       if (typeof user.save === 'function') {
         await user.save();
       }
-      console.log(`✅ [BACKEND SUBSCRIPTION STEP 3: STRIPE_CUSTOMER_CREATED] Customer ID: ${customerId}`);
-    } else {
-      console.log(`ℹ️ [BACKEND SUBSCRIPTION STEP 3: STRIPE_CUSTOMER_EXISTING] Customer ID: ${customerId}`);
-      try {
-        const userName = user.name || user.firstName || 'User';
-        await stripe.customers.update(customerId, {
-          address: defaultAddress,
-          shipping: {
-            name: userName,
-            address: defaultAddress,
-          },
-        });
-        console.log(`✅ [BACKEND SUBSCRIPTION STEP 3: STRIPE_CUSTOMER_UPDATED] Address updated.`);
-      } catch (upErr) {
-        console.warn('⚠️ [STRIPE CUSTOMER] Address update warning:', upErr.message);
-      }
+      console.log(`✅ [BACKEND SUBSCRIPTION STEP 3: STRIPE_CUSTOMER_CREATED] New Customer ID created: ${customerId}`);
     }
 
     // Define reliable backend success/cancel URLs for Checkout session completion
@@ -189,42 +173,36 @@ exports.createCheckoutSession = async (req, res) => {
 
       console.log('📌 [BACKEND SUBSCRIPTION STEP 4.1.1: PAYLOAD_READY]', JSON.stringify(sessionPayload, null, 2));
 
-      const checkoutSession = await stripe.checkout.sessions.create(sessionPayload);
+      let checkoutSession;
+      try {
+        checkoutSession = await stripe.checkout.sessions.create(sessionPayload);
+      } catch (sessErr) {
+        if (sessErr.message && sessErr.message.includes('No such customer')) {
+          console.warn(`⚠️ [STRIPE CHECKOUT] Customer ${customerId} rejected by Stripe. Creating new customer and retrying...`);
+          const userEmail = user.email || `${user._id}@datingapp.com`;
+          const userName = user.name || 'User';
+          const freshCustomer = await stripe.customers.create({
+            email: userEmail,
+            name: userName,
+            metadata: { userId: (userId || '').toString() },
+          });
+          customerId = freshCustomer.id;
+          user.stripeCustomerId = customerId;
+          if (typeof user.save === 'function') await user.save();
+          sessionPayload.customer = customerId;
+          checkoutSession = await stripe.checkout.sessions.create(sessionPayload);
+        } else {
+          throw sessErr;
+        }
+      }
+
       targetCheckoutUrl = checkoutSession.url;
       subId = checkoutSession.subscription || `sub_${checkoutSession.id}`;
       sessionId = checkoutSession.id;
       console.log(`✅ [BACKEND SUBSCRIPTION STEP 4.2: CHECKOUT_SESSION_SUCCESS] Hosted Checkout URL: ${targetCheckoutUrl}`);
     } catch (stripeErr) {
-      console.warn('⚠️ [BACKEND SUBSCRIPTION STEP 4.3: CHECKOUT_SESSION_FALLBACK] Fallback to 3DS PaymentIntent:', stripeErr.message);
-      try {
-        const amountPaise = planType === 'Gold' ? 99900 : 49900;
-        const paymentIntent = await stripe.paymentIntents.create({
-          amount: amountPaise,
-          currency: 'inr',
-          payment_method_types: ['card'],
-          description: `${selectedPlan.name} Subscription`,
-          customer: customerId,
-          metadata: { userId: userId.toString(), planType: planType },
-        });
-
-        const confirmedPi = await stripe.paymentIntents.confirm(paymentIntent.id, {
-          payment_method: 'pm_card_threeDSecure2Required',
-          return_url: successUrl,
-        });
-
-        if (confirmedPi.next_action && confirmedPi.next_action.redirect_to_url) {
-          targetCheckoutUrl = confirmedPi.next_action.redirect_to_url.url;
-        } else {
-          targetCheckoutUrl = successUrl;
-        }
-
-        subId = `sub_${paymentIntent.id}`;
-        sessionId = paymentIntent.id;
-        console.log(`✅ [BACKEND SUBSCRIPTION STEP 4.4: PAYMENTINTENT_SUCCESS] Checkout URL: ${targetCheckoutUrl}`);
-      } catch (err2) {
-        console.error('❌ [BACKEND SUBSCRIPTION STEP 4.5: STRIPE_FATAL_ERROR]:', err2.message);
-        return res.status(500).json({ message: 'Failed to create payment session: ' + err2.message });
-      }
+      console.error('❌ [BACKEND SUBSCRIPTION STEP 4.3: CHECKOUT_SESSION_ERROR]:', stripeErr.message);
+      return res.status(500).json({ message: 'Failed to create payment session: ' + stripeErr.message });
     }
 
     // Save pending subscription record in DB
@@ -253,7 +231,7 @@ exports.createCheckoutSession = async (req, res) => {
       sessionId: sessionId,
       subscriptionId: subId,
       customerId: customerId,
-      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_51OrZdzSGA5udBfcN8rWWXOK535E24Fp5njj3n1ccrwNROQKrcljjKvo7HpTNK8EwaaznhKLwZ777OfUgWwCmbB0w00lnqqp0HL',
+      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_51UIPtESNVBh57Ub9dg7BgWRA8KgUvVfkFtyov0Etl0OCG3Uh3Xjrj39wr5C3FhO60Zes39Ioi9kDAROGYP3PPqpD00oCTzeHvY',
       plan: selectedPlan,
     });
   } catch (error) {
@@ -491,7 +469,7 @@ exports.handleWebhook = async (req, res) => {
             const priceId = stripeSub.items?.data[0]?.price?.id;
 
             let planType = 'Gold';
-            if (priceId === (process.env.STRIPE_PREMIUM_PRICE_ID || 'price_1UE3KpSGA5udBfcNnAqb54o1')) {
+            if (priceId === (process.env.STRIPE_PREMIUM_PRICE_ID || 'price_1UIPxESNVBh57Ub9JgqAyuuy')) {
               planType = 'Premium';
             }
 

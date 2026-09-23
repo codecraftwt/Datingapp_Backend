@@ -1,11 +1,13 @@
 const User = require('../models/User');
 
-const FREE_SWIPE_LIMIT = 10;
+// Hardcoded limits (Not loaded from process.env)
+const FREE_SWIPE_LIMIT = 2;
+const PREMIUM_SWIPE_LIMIT = 3;
 const GOLD_SUPER_LIKE_LIMIT = 5;
-const PREMIUM_SUPER_LIKE_LIMIT = 10;
+const PREMIUM_SUPER_LIKE_LIMIT = 1;
 
 /**
- * Middleware: Enforce Daily Swipe Limits for Free Tier Users
+ * Middleware: Enforce Daily Swipe Limits for Free and Premium Tier Users
  */
 exports.checkSwipeLimit = async (req, res, next) => {
   try {
@@ -18,12 +20,14 @@ exports.checkSwipeLimit = async (req, res, next) => {
 
     const tier = user.subscriptionTier || 'Free';
 
-    // Gold and Premium tiers have Unlimited Swipes
-    if (tier === 'Gold' || tier === 'Premium') {
+    // Gold tier has Unlimited Swipes
+    if (tier === 'Gold') {
       return next();
     }
 
-    // Free Tier: Reset counter if last reset was more than 24 hours ago
+    const limit = tier === 'Premium' ? PREMIUM_SWIPE_LIMIT : FREE_SWIPE_LIMIT;
+
+    // Reset counter if last reset was more than 24 hours ago
     const now = new Date();
     const lastReset = user.lastSwipeReset ? new Date(user.lastSwipeReset) : new Date(0);
     const hoursPassed = (now - lastReset) / (1000 * 60 * 60);
@@ -33,17 +37,17 @@ exports.checkSwipeLimit = async (req, res, next) => {
       user.lastSwipeReset = now;
     }
 
-    if (user.dailySwipeCount >= FREE_SWIPE_LIMIT) {
+    if (user.dailySwipeCount >= limit) {
       return res.status(403).json({
         success: false,
         code: 'SWIPE_LIMIT_EXCEEDED',
-        message: 'Daily swipe limit reached! Upgrade to Gold or Premium for Unlimited Swipes.',
-        limit: FREE_SWIPE_LIMIT,
+        message: `Daily swipe limit of ${limit} reached! Upgrade for Unlimited Swipes.`,
+        limit: limit,
         dailySwipeCount: user.dailySwipeCount,
       });
     }
 
-    // Increment swipe count for Free user
+    // Increment swipe count for Free and Premium users
     user.dailySwipeCount = (user.dailySwipeCount || 0) + 1;
     await User.findByIdAndUpdate(user._id || userId, {
       $set: {
@@ -63,14 +67,7 @@ exports.checkSwipeLimit = async (req, res, next) => {
  * Helper: Check Passport (Location Change) Access
  */
 exports.checkPassportAccess = (req, res, next) => {
-  const tier = req.user?.subscriptionTier || 'Free';
-  if (tier === 'Free') {
-    return res.status(403).json({
-      success: false,
-      code: 'PASSPORT_LOCKED',
-      message: 'Passport location change is exclusive to Gold & Premium members.',
-    });
-  }
+  // Passport location restriction disabled for subscription
   next();
 };
 
@@ -108,7 +105,7 @@ exports.checkSuperLikeLimit = async (req, res, next) => {
       return res.status(403).json({
         success: false,
         code: 'SUPER_LIKE_LIMIT_EXCEEDED',
-        message: `Daily Super Like limit of ${limit} reached! Try again tomorrow.`,
+        message: 'Your super likes limit have reached',
         limit: limit,
         dailySuperLikesCount: user.dailySuperLikesCount,
       });
@@ -128,3 +125,4 @@ exports.checkSuperLikeLimit = async (req, res, next) => {
     next();
   }
 };
+

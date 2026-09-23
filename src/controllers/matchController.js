@@ -197,24 +197,8 @@ exports.superLikeUser = async (req, res) => {
       return res.status(400).json({ message: 'Cannot Super Like this profile.' });
     }
 
-    // Daily 24-hour limit check (1 per 24 hours)
-    const currentUserDoc = await User.findById(currentUserId).select('lastSuperLikeDate');
-    const now = new Date();
-    if (currentUserDoc?.lastSuperLikeDate) {
-      const lastDate = new Date(currentUserDoc.lastSuperLikeDate);
-      const diffMs = now.getTime() - lastDate.getTime();
-      const twentyFourHoursMs = 24 * 60 * 60 * 1000;
-      if (diffMs < twentyFourHoursMs) {
-        const hoursLeft = Math.ceil((twentyFourHoursMs - diffMs) / (60 * 60 * 1000));
-        return res.status(400).json({
-          message: `You have used your 1 free Super Like for today. Try again in ${hoursLeft} hour${hoursLeft > 1 ? 's' : ''}.`,
-          canSuperLike: false,
-          hoursUntilReset: hoursLeft
-        });
-      }
-    }
-
     // Update lastSuperLikeDate to current timestamp
+    const now = new Date();
     await User.findByIdAndUpdate(currentUserId, { lastSuperLikeDate: now });
 
     const existingLike = await Match.findOne({
@@ -465,28 +449,38 @@ exports.getLikes = async (req, res) => {
  */
 exports.getSuperLikeStatus = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('lastSuperLikeDate');
+    const user = await User.findById(req.user._id).select('lastSuperLikeDate subscriptionTier dailySuperLikesCount lastSuperLikeReset');
     const now = new Date();
 
-    let canSuperLike = true;
+    const tier = user?.subscriptionTier || 'Free';
+    const limit = tier === 'Premium' ? 1 : (tier === 'Gold' ? 5 : 0);
+
+    const lastReset = user?.lastSuperLikeReset ? new Date(user.lastSuperLikeReset) : new Date(0);
+    const hoursPassed = (now - lastReset) / (1000 * 60 * 60);
+
+    let currentCount = user?.dailySuperLikesCount || 0;
+    if (hoursPassed >= 24) {
+      currentCount = 0;
+    }
+
+    const remainingSuperLikes = Math.max(0, limit - currentCount);
+    const canSuperLike = remainingSuperLikes > 0;
+
     let secondsUntilReset = 0;
-
-    if (user?.lastSuperLikeDate) {
-      const lastDate = new Date(user.lastSuperLikeDate);
-      const diffMs = now.getTime() - lastDate.getTime();
+    if (!canSuperLike && lastReset) {
+      const diffMs = now.getTime() - lastReset.getTime();
       const twentyFourHoursMs = 24 * 60 * 60 * 1000;
-
       if (diffMs < twentyFourHoursMs) {
-        canSuperLike = false;
         secondsUntilReset = Math.ceil((twentyFourHoursMs - diffMs) / 1000);
       }
     }
-
     const hoursUntilReset = Math.ceil(secondsUntilReset / 3600);
 
     return res.status(200).json({
       canSuperLike,
-      remainingSuperLikes: canSuperLike ? 1 : 0,
+      limit,
+      remainingSuperLikes,
+      dailySuperLikesCount: currentCount,
       lastSuperLikeDate: user?.lastSuperLikeDate || null,
       secondsUntilReset,
       hoursUntilReset,

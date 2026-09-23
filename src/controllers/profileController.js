@@ -2208,16 +2208,7 @@ exports.updateLocation = async (req, res) => {
     const currentUser = await User.findById(userId);
     if (!currentUser) return res.status(404).json({ message: 'User not found.' });
 
-    const tier = currentUser.subscriptionTier || 'Free';
-
-    // Passport mode restriction: Only Gold and Premium members can use custom Passport location
-    if (isPassport && tier === 'Free') {
-      return res.status(403).json({
-        success: false,
-        code: 'PASSPORT_LOCKED',
-        message: 'Passport location feature is exclusive to Gold & Premium members. Upgrade to unlock global location changing!',
-      });
-    }
+    // Passport mode restriction disabled for subscription
 
     const lat = parseFloat(latitude);
     const lng = parseFloat(longitude);
