@@ -25,6 +25,18 @@ const isBackendVideoUrl = (url) => {
   );
 };
 
+const ensureVideo15SecLimit = (url) => {
+  if (!url || typeof url !== 'string') return url;
+  const lower = url.toLowerCase();
+  const isVideo = lower.includes('/video/upload/') || lower.includes('/video/') || /\.(mp4|mov|webm|3gp|mkv|avi|m4v|flv)($|\?|#)/i.test(lower);
+  if (isVideo && url.includes('cloudinary.com') && url.includes('/video/upload/')) {
+    if (!url.includes('/so_0,eo_15/') && !url.includes('/eo_15/') && !url.includes('/du_15/')) {
+      return url.replace('/video/upload/', '/video/upload/so_0,eo_15/');
+    }
+  }
+  return url;
+};
+
 const checkIsOnline = (user) => {
   if (!user) {
     console.log('🔍 [ONLINE STATUS EVALUATION] No user provided -> FINAL STATUS: Offline');
@@ -225,8 +237,12 @@ exports.saveQuestionnaire = async (req, res) => {
           if (img.startsWith('file://') || img.startsWith('content://')) {
             try {
               const isVid = isBackendVideoUrl(img);
-              const cloudRes = await cloudinary.uploader.upload(img, { folder: 'dating_app_profiles', resource_type: isVid ? 'video' : 'auto' });
-              return cloudRes.secure_url;
+              const cloudRes = await cloudinary.uploader.upload(img, {
+                folder: 'dating_app_profiles',
+                resource_type: isVid ? 'video' : 'auto',
+                transformation: isVid ? [{ start_offset: '0', end_offset: '15' }] : undefined,
+              });
+              return isVid ? ensureVideo15SecLimit(cloudRes.secure_url) : cloudRes.secure_url;
             } catch (err) {
               console.warn('Auto Cloudinary upload error:', err.message);
               return null;
@@ -235,10 +251,14 @@ exports.saveQuestionnaire = async (req, res) => {
           return null;
         })
       );
-      finalProfileImages = finalProfileImages.filter(Boolean);
+      finalProfileImages = finalProfileImages
+        .filter(Boolean)
+        .map((p) => (isBackendVideoUrl(p) ? ensureVideo15SecLimit(p) : p));
     }
 
-    const detectedVideos = finalProfileImages.filter((p) => isBackendVideoUrl(p));
+    const detectedVideos = finalProfileImages
+      .filter((p) => isBackendVideoUrl(p))
+      .map((v) => ensureVideo15SecLimit(v));
     const detectedPhotos = finalProfileImages.filter((p) => !isBackendVideoUrl(p));
 
     let finalProfileImage =
@@ -258,9 +278,11 @@ exports.saveQuestionnaire = async (req, res) => {
 
     // Slot #1 is strictly reserved for main profile image (profileImage).
     // Strip finalProfileImage from gallery arrays (Slots 2 to 9) so it is not duplicated.
-    const galleryMedia = finalProfileImages.filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== finalProfileImage);
+    const galleryMedia = finalProfileImages
+      .filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== finalProfileImage)
+      .map((p) => (isBackendVideoUrl(p) ? ensureVideo15SecLimit(p) : p));
     const galleryPhotos = galleryMedia.filter((p) => !isBackendVideoUrl(p));
-    const galleryVideos = galleryMedia.filter((p) => isBackendVideoUrl(p));
+    const galleryVideos = galleryMedia.filter((p) => isBackendVideoUrl(p)).map((v) => ensureVideo15SecLimit(v));
 
     const setObj = {
       firstName,
@@ -860,6 +882,8 @@ exports.getProfile = async (req, res) => {
         isEmailVerified: !!freshUser.isEmailVerified,
         isMobileVerified: !!freshUser.isMobileVerified,
         lastSeen: freshUser.lastSeen || freshUser.updatedAt || freshUser.createdAt,
+        subscriptionTier: freshUser.subscriptionTier || 'Free',
+        subscriptionStatus: freshUser.subscriptionStatus || 'inactive',
         createdAt: freshUser.createdAt,
         updatedAt: freshUser.updatedAt,
         fcmToken: freshUser.fcmToken,
@@ -1224,33 +1248,31 @@ exports.uploadImage = async (req, res) => {
       const uploadOptions = {
         folder: 'dating_app_profiles',
         resource_type: resType,
+        transformation: isVideo ? [{ start_offset: '0', end_offset: '15' }] : undefined,
+        eager_async: true,
+        timeout: 180000,
       };
-
-      if (isVideo) {
-        uploadOptions.transformation = [
-          { start_offset: "0", end_offset: "15" }
-        ];
-      }
 
       let resultUrl = null;
       try {
-        console.log(`Attempting Cloudinary unsigned_upload for ${isVideo ? 'video (trimmed to 15s)' : 'photo'}...`);
-        const unsignedOptions = isVideo
-          ? { resource_type: resType, transformation: [{ start_offset: "0", end_offset: "15" }] }
-          : { resource_type: resType };
-        const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', unsignedOptions);
+        console.log(`Attempting fast Cloudinary signed upload for ${isVideo ? 'video' : 'photo'}...`);
+        const cloudRes = await cloudinary.uploader.upload(inputData, uploadOptions);
         if (cloudRes && cloudRes.secure_url) {
           resultUrl = cloudRes.secure_url;
         }
       } catch (err1) {
-        console.warn('Cloudinary unsigned_upload failed, trying signed upload:', err1.message || err1);
+        console.warn('Cloudinary signed upload failed, trying unsigned fallback:', err1.message || err1);
         try {
-          const cloudRes = await cloudinary.uploader.upload(inputData, uploadOptions);
+          const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', {
+            resource_type: resType,
+            eager_async: true,
+            timeout: 180000,
+          });
           if (cloudRes && cloudRes.secure_url) {
             resultUrl = cloudRes.secure_url;
           }
         } catch (err2) {
-          console.warn('Cloudinary signed upload failed:', err2.message || err2);
+          console.warn('Cloudinary unsigned upload also failed:', err2.message || err2);
         }
       }
 
@@ -1690,33 +1712,68 @@ exports.uploadGalleryMedia = async (req, res) => {
     let mediaUrl = req.body?.mediaUrl || req.body?.photo || req.body?.url;
 
     if (file && file.path) {
+      if (fs.existsSync(file.path)) {
+        const stats = fs.statSync(file.path);
+        const maxSizeBytes = 1024 * 1024 * 1024; // 1GB (1000MB)
+        if (stats.size > maxSizeBytes) {
+          try { fs.unlinkSync(file.path); } catch (e) {}
+          return res.status(413).json({
+            success: false,
+            message: `Video size (${(stats.size / (1024 * 1024)).toFixed(1)}MB) exceeds 1GB limit. Please choose a video under 1GB.`,
+          });
+        }
+      }
+
       const mime = file.mimetype || 'image/jpeg';
       const isVideo = mime.startsWith('video/') || /\.(mp4|mov|webm|3gp|mkv|avi|m4v)($|\?)/i.test(file.originalname || '');
       const resType = isVideo ? 'video' : 'auto';
 
+      const uploadOptions = {
+        folder: 'dating_app_profiles',
+        resource_type: resType,
+        transformation: isVideo ? [{ start_offset: '0', end_offset: '15' }] : undefined,
+        eager_async: true,
+        timeout: 180000,
+      };
+
       try {
-        console.log(`[uploadGalleryMedia] Uploading ${resType} to Cloudinary...`, file.path);
-        const cloudRes = await cloudinary.uploader.unsigned_upload(file.path, 'Dating_Profiles', { resource_type: resType });
-        if (cloudRes && cloudRes.secure_url) {
-          mediaUrl = cloudRes.secure_url;
+        console.log(`[uploadGalleryMedia] Uploading ${resType} directly to Cloudinary...`, file.path);
+        const signedRes = await cloudinary.uploader.upload(file.path, uploadOptions);
+        if (signedRes && signedRes.secure_url) {
+          mediaUrl = signedRes.secure_url;
         }
-      } catch (cErr) {
-        console.warn('[uploadGalleryMedia] unsigned_upload failed, attempting signed upload:', cErr.message);
+      } catch (sErr) {
+        console.warn('[uploadGalleryMedia] signed upload failed, attempting unsigned fallback:', sErr.message);
         try {
-          const signedRes = await cloudinary.uploader.upload(file.path, { folder: 'dating_app_profiles', resource_type: resType });
-          if (signedRes && signedRes.secure_url) {
-            mediaUrl = signedRes.secure_url;
+          const cloudRes = await cloudinary.uploader.unsigned_upload(file.path, 'Dating_Profiles', {
+            resource_type: resType,
+            eager_async: true,
+            timeout: 180000
+          });
+          if (cloudRes && cloudRes.secure_url) {
+            mediaUrl = cloudRes.secure_url;
           }
-        } catch (sErr) {
-          console.error('[uploadGalleryMedia] signed upload also failed:', sErr.message);
+        } catch (cErr) {
+          console.error('[uploadGalleryMedia] unsigned upload fallback also failed:', cErr.message);
+        }
+      }
+
+      if (!mediaUrl) {
+        // Fallback: Serve file locally from /uploads directory if Cloudinary upload is unavailable
+        const filename = path.basename(file.path);
+        const protocol = req.protocol || 'http';
+        const host = req.get('host') || 'localhost:5000';
+        mediaUrl = `${protocol}://${host}/uploads/${filename}`;
+        console.log('[uploadGalleryMedia] Using local /uploads/ fallback URL:', mediaUrl);
+      } else {
+        if (fs.existsSync(file.path)) {
+          try { fs.unlinkSync(file.path); } catch (e) {}
         }
       }
 
       // Automatically apply 15-second video trim transformation to Cloudinary URL
       if (mediaUrl && isVideo && mediaUrl.includes('cloudinary.com') && mediaUrl.includes('/video/upload/')) {
-        if (!mediaUrl.includes('/so_0,eo_15/') && !mediaUrl.includes('/eo_15/')) {
-          mediaUrl = mediaUrl.replace('/video/upload/', '/video/upload/so_0,eo_15/');
-        }
+        mediaUrl = ensureVideo15SecLimit(mediaUrl);
       }
     }
 

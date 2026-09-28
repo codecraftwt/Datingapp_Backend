@@ -53,8 +53,8 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Pragma', 'Expires'],
 }));
-app.use(express.json({ limit: '500mb' }));
-app.use(express.urlencoded({ limit: '500mb', extended: true }));
+app.use(express.json({ limit: '1000mb' }));
+app.use(express.urlencoded({ limit: '1000mb', extended: true }));
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -67,7 +67,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ message: 'Invalid JSON format in request body.' });
   }
   if (err && err.status === 413) {
-    return res.status(413).json({ message: 'Uploaded video file size is too large (max 100MB allowed).' });
+    return res.status(413).json({ message: 'Uploaded video file size is too large (max 1GB allowed).' });
   }
   next(err);
 });
@@ -745,6 +745,14 @@ app.use((err, req, res, next) => {
   console.error(`❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌❌\n`);
 
   if (!res.headersSent) {
+    if (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' || err.type === 'entity.too.large') {
+      return res.status(413).json({
+        success: false,
+        status: 'FILE_TOO_LARGE',
+        message: 'Uploaded video file size exceeds maximum limit of 1GB. Please choose a video under 1GB.',
+      });
+    }
+
     const statusCode = err.status || err.statusCode || 500;
     res.status(statusCode).json({
       status: 'SERVER_ERROR',

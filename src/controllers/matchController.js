@@ -8,6 +8,7 @@ const Notification = require('../models/Notification');
 const Plan = require('../models/Plan');
 const Subscription = require('../models/Subscription');
 const { sendPushNotification } = require('../services/pushNotificationService');
+const { getUserPlanPermissions } = require('../middleware/featureAccess');
 
 /**
  * Helper to check if a user is currently online:
@@ -426,21 +427,8 @@ exports.getLikes = async (req, res) => {
       }
     }
 
-    let canSeeLikes = tier !== 'Free';
-
-    if (tier !== 'Free') {
-      try {
-        const plan = await Plan.findOne({ planKey: tier, isActive: true });
-        if (plan) {
-          const likesFeat = plan.features?.find((f) => f.featureKey === 'SEE_WHO_LIKED_YOU');
-          if (likesFeat) {
-            canSeeLikes = !!likesFeat.isAllowed;
-          }
-        }
-      } catch (e) {
-        canSeeLikes = tier !== 'Free';
-      }
-    }
+    const perms = await getUserPlanPermissions(tier);
+    const canSeeLikes = Boolean(perms?.likes?.isAllowed);
 
     if (!canSeeLikes) {
       return res.status(200).json({
@@ -489,7 +477,7 @@ exports.getSuperLikeStatus = async (req, res) => {
 
     if (tier !== 'Free') {
       try {
-        const plan = await Plan.findOne({ planKey: tier, isActive: true });
+        const plan = await Plan.findOne({ planKey: { $regex: new RegExp(`^${tier}$`, 'i') }, isActive: true });
         if (plan) {
           const slFeat = plan.features?.find((f) => f.featureKey === 'SUPER_LIKES');
           if (slFeat && slFeat.isAllowed) {
@@ -748,6 +736,20 @@ exports.blockUser = async (req, res) => {
         { $set: { blockerId: currentUserId, blockedId: targetObjectId, reason: req.body?.reason || '' } },
         { upsert: true, new: true }
       );
+
+      try {
+        const Match = require('../models/Match');
+        if (Match) {
+          await Match.deleteMany({
+            $or: [
+              { userId: currentUserId, matchedUserId: targetObjectId },
+              { userId: targetObjectId, matchedUserId: currentUserId }
+            ]
+          });
+        }
+      } catch (mErr) {
+        console.warn('Match cleanup warning during block:', mErr);
+      }
     }
 
     const io = req.app.get('io') || global.io;

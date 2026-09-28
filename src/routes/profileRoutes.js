@@ -5,6 +5,25 @@ const matchController = require('../controllers/matchController');
 const authController = require('../controllers/authController'); // for DELETE /profile
 const auth = require('../middleware/auth');
 const upload = require('../middleware/upload');
+const handleMulterUpload = upload.handleMulterUpload || ((req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (!contentType.includes('multipart/form-data')) {
+    return next();
+  }
+  upload.any()(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError') {
+        return res.status(413).json({
+          success: false,
+          message: 'Video file size exceeds maximum limit of 1GB. Please choose a video under 1GB.',
+        });
+      }
+      return res.status(400).json({ success: false, message: err.message || 'Upload error.' });
+    }
+    if (req.files && req.files.length > 0) req.file = req.files[0];
+    next();
+  });
+});
 
 router.put(['/visibility', '/hide-profile', '/show-profile'], auth, profileController.updateProfileVisibility);
 router.put('/questionnaire', auth, profileController.saveQuestionnaire);
@@ -18,14 +37,10 @@ router.all('/online-status', auth, profileController.getOnlineStatusMap);
 router.all('/online-status/:userId', auth, profileController.getUserOnlineStatus);
 router.get(['/hidden-media', '/hidden'], auth, profileController.getHiddenMedia);
 router.get(['/blocked-users', '/blocked-users/:userId', '/blocked'], auth, matchController.getBlockedUsers);
+router.all(['/block', '/block-user'], auth, matchController.blockUser);
 router.post(['/unblock', '/unblock/:userId'], auth, matchController.unblockUser);
 
-router.post(['/upload', '/uploads'], auth, upload.any(), (req, res, next) => {
-  if (req.files && req.files.length > 0) {
-    req.file = req.files[0];
-  }
-  next();
-}, profileController.uploadImage);
+router.post(['/upload', '/uploads'], auth, handleMulterUpload, profileController.uploadImage);
 router.post('/remove-photo', auth, profileController.removeProfilePhoto);
 router.post('/remove-profile', auth, profileController.removeProfile);
 router.put('/fcm-token', auth, profileController.updateFcmToken);
@@ -43,25 +58,14 @@ router.put(['/unhide-media', '/unhide'], auth, profileController.unhideProfileMe
 router.post(['/unhide-media', '/unhide'], auth, profileController.unhideProfileMedia);
 
 // Main Profile Photo Routes (Slot #1)
-router.post('/main-photo', auth, upload.any(), (req, res, next) => {
-  if (req.files && req.files.length > 0) req.file = req.files[0];
-  next();
-}, profileController.uploadMainPhoto);
-router.put('/main-photo', auth, upload.any(), (req, res, next) => {
-  if (req.files && req.files.length > 0) req.file = req.files[0];
-  next();
-}, profileController.uploadMainPhoto);
+router.post('/main-photo', auth, handleMulterUpload, profileController.uploadMainPhoto);
+router.put('/main-photo', auth, handleMulterUpload, profileController.uploadMainPhoto);
 router.delete('/main-photo', auth, profileController.removeMainPhoto);
 
 // Gallery & Preview Media Routes (Slots #2 - #9)
-router.post(['/gallery-media', '/gallery-media/:slotIndex'], auth, upload.any(), (req, res, next) => {
-  if (req.files && req.files.length > 0) req.file = req.files[0];
-  next();
-}, profileController.uploadGalleryMedia);
-router.put(['/gallery-media', '/gallery-media/:slotIndex'], auth, upload.any(), (req, res, next) => {
-  if (req.files && req.files.length > 0) req.file = req.files[0];
-  next();
-}, profileController.uploadGalleryMedia);
+router.post(['/gallery-media', '/gallery-media/:slotIndex'], auth, handleMulterUpload, profileController.uploadGalleryMedia);
+router.put(['/gallery-media', '/gallery-media/:slotIndex'], auth, handleMulterUpload, profileController.uploadGalleryMedia);
+
 router.delete(['/gallery-media', '/gallery-media/:slotIndex'], auth, profileController.removeGalleryMedia);
 router.get('/gallery-preview', auth, profileController.getGalleryPreview);
 

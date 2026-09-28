@@ -20,6 +20,11 @@ router.get('/cancel-page', (req, res, next) => {
   next();
 }, subscriptionController.handleCancelPage);
 
+router.get('/back-to-app', (req, res, next) => {
+  console.log('📱 [ROUTE MATCHED] GET /api/subscriptions/back-to-app');
+  next();
+}, subscriptionController.handleBackToApp);
+
 // Webhook route for Stripe events
 router.post('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
   console.log('📡 [ROUTE MATCHED] POST /api/subscriptions/webhook');

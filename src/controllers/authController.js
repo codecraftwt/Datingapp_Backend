@@ -362,6 +362,8 @@ exports.login = async (req, res) => {
         profileImage: user.profileImage,
         profileImages: user.profileImages || [],
         bio: user.bio || '',
+        subscriptionTier: user.subscriptionTier || 'Free',
+        subscriptionStatus: user.subscriptionStatus || 'inactive',
         fcmToken: user.fcmToken || null,
       },
     });

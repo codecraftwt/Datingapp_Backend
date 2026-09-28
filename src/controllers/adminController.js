@@ -240,7 +240,7 @@ const checkIsOnline = (user) => {
 
   const uIdStr = (user._id || user.id || user).toString();
 
-  // Condition 2: Active inside app (Socket connected, joined room, or active presence ping in memory)
+  // Condition 2 & 3: Active inside app + Live network
   const hasOnlineUserMap = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
   const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
   const hasRecentHeartbeat = !!(lastPing && (Date.now() - lastPing < 35000));
@@ -251,15 +251,11 @@ const checkIsOnline = (user) => {
     if (rm && rm.size > 0) inRoom = true;
   }
 
-  const isLiveActiveInApp = hasOnlineUserMap || inRoom || hasRecentHeartbeat;
+  // Database verified presence (isOnline === true and recent lastSeen timestamp within 35 seconds)
+  const lastSeenMs = user.lastSeen ? new Date(user.lastSeen).getTime() : 0;
+  const hasRecentDbHeartbeat = user.isOnline === true && (Date.now() - lastSeenMs < 35000);
 
-  const finalIsOnline = isLiveActiveInApp;
-
-  console.log(`🔍 [ADMIN ONLINE EVALUATION] User "${uIdStr}" (${user.email || user.name || 'User'}):`, {
-    Condition1_LoggedIn: user.isLoggedIn !== false,
-    Condition2_LiveActiveInApp: isLiveActiveInApp,
-    FINAL_STATUS: finalIsOnline ? 'Online 🟢' : 'Offline 🔴'
-  });
+  const finalIsOnline = hasOnlineUserMap || inRoom || hasRecentHeartbeat || hasRecentDbHeartbeat;
 
   return finalIsOnline;
 };

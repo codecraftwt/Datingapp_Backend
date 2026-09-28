@@ -57,7 +57,34 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max limit for video uploads
+  limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB (1000MB) max limit for video uploads
 });
 
+const handleMulterUpload = (req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (!contentType.includes('multipart/form-data')) {
+    return next();
+  }
+  upload.any()(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError') {
+        return res.status(413).json({
+          success: false,
+          message: 'Video file size exceeds maximum limit of 1GB. Please choose a video under 1GB.',
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: err.message || 'File upload error.',
+      });
+    }
+    if (req.files && req.files.length > 0) {
+      req.file = req.files[0];
+    }
+    next();
+  });
+};
+
 module.exports = upload;
+module.exports.handleMulterUpload = handleMulterUpload;
+

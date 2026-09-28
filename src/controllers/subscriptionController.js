@@ -3,6 +3,7 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const User = require('../models/User');
 const Subscription = require('../models/Subscription');
 const Plan = require('../models/Plan');
+const { getUserPlanPermissions } = require('../middleware/featureAccess');
 
 const PLAN_CONFIG = {
   Gold: {
@@ -16,7 +17,7 @@ const PLAN_CONFIG = {
       'Unlimited Likes & Swipes',
       'See Who Liked Your Profile',
       '5 Super Likes per day',
-    ],
+    ]
   },
   Premium: {
     productId: process.env.STRIPE_PREMIUM_PRODUCT_ID || 'prod_VJ211jsXBEFLpr',
@@ -405,11 +406,14 @@ exports.confirmSubscription = async (req, res) => {
 
     console.log(`🎉 [BACKEND SUBSCRIPTION STEP 5.6: ACTIVATION_SUCCESS] User "${user.email}" upgraded to ${planType} plan!`);
 
+    const permissions = await getUserPlanPermissions(planType);
+
     return res.status(200).json({
       success: true,
       message: `Successfully upgraded to ${planType} Membership! 🎉`,
       subscriptionTier: updatedUser ? updatedUser.subscriptionTier : planType,
       subscriptionStatus: updatedUser ? updatedUser.subscriptionStatus : 'active',
+      permissions,
       subscription: subRecord,
     });
   } catch (error) {
@@ -447,63 +451,65 @@ exports.getMySubscription = async (req, res) => {
       }
     }
 
-    let dbPlan = await Plan.findOne({ planKey: currentTier, isActive: true });
-    if (!dbPlan && currentTier !== 'Free') {
-      dbPlan = await Plan.findOne({ planKey: currentTier });
+    const isFree = !currentTier || currentTier.toLowerCase() === 'free' || currentTier.toLowerCase() === 'inactive';
+    const cleanTier = currentTier.replace(/plan/i, '').trim();
+
+    let dbPlan = await Plan.findOne({
+      $or: [
+        { planKey: { $regex: new RegExp(`^${currentTier}$`, 'i') } },
+        { name: { $regex: new RegExp(`^${currentTier}$`, 'i') } },
+        { planKey: { $regex: new RegExp(`^${cleanTier}`, 'i') } },
+        { name: { $regex: new RegExp(`^${cleanTier}`, 'i') } },
+      ],
+      isActive: true,
+    });
+    if (!dbPlan && !isFree) {
+      dbPlan = await Plan.findOne({
+        $or: [
+          { planKey: { $regex: new RegExp(`^${currentTier}$`, 'i') } },
+          { name: { $regex: new RegExp(`^${currentTier}$`, 'i') } },
+          { planKey: { $regex: new RegExp(`^${cleanTier}`, 'i') } },
+          { name: { $regex: new RegExp(`^${cleanTier}`, 'i') } },
+        ],
+      });
     }
 
-    // Default permissions (Free tier fallback)
-    const permissions = {
-      swipes: { isAllowed: true, limitValue: 2, isUnlimited: false },
-      superLikes: { isAllowed: false, limitValue: 0 },
-      search: { isAllowed: false },
-      likes: { isAllowed: false },
-    };
+    // Dynamically obtain permissions from MongoDB Plan collection
+    const permissions = await getUserPlanPermissions(currentTier);
 
     let featureList = [];
-
-    if (dbPlan) {
-      dbPlan.features?.forEach((f) => {
-        if (f.featureKey === 'SWIPES') {
-          permissions.swipes = {
-            isAllowed: !!f.isAllowed,
-            limitValue: f.limitValue,
-            isUnlimited: f.limitValue === -1,
-          };
-          if (f.isAllowed) {
-            featureList.push(f.limitValue === -1 ? 'Unlimited Likes & Swipes' : `${f.limitValue} Swipes per day`);
-          }
-        } else if (f.featureKey === 'SUPER_LIKES') {
-          permissions.superLikes = {
-            isAllowed: !!f.isAllowed && f.limitValue > 0,
-            limitValue: f.limitValue || 0,
-          };
-          if (f.isAllowed && f.limitValue > 0) {
+    if (dbPlan && Array.isArray(dbPlan.features)) {
+      dbPlan.features.forEach((f) => {
+        if (!f.isAllowed) return;
+        const featKey = (f.featureKey || '').toUpperCase();
+        if (featKey === 'SWIPES') {
+          featureList.push(f.limitValue === -1 ? 'Unlimited Likes & Swipes' : `${f.limitValue} Swipes per day`);
+        } else if (featKey === 'SUPER_LIKES') {
+          if (f.limitValue > 0) {
             featureList.push(`${f.limitValue} Super Likes per day`);
           }
-        } else if (f.featureKey === 'ADVANCED_SEARCH') {
-          permissions.search = { isAllowed: !!f.isAllowed };
-          if (f.isAllowed) {
-            featureList.push('Unlock All Advanced Search Filters');
-          }
-        } else if (f.featureKey === 'SEE_WHO_LIKED_YOU') {
-          permissions.likes = { isAllowed: !!f.isAllowed };
-          if (f.isAllowed) {
-            featureList.push('See Who Liked Your Profile');
-          }
+        } else if (featKey === 'ADVANCED_SEARCH' || featKey === 'SEARCH') {
+          featureList.push('Unlock All Advanced Search Filters');
+        } else if (featKey === 'SEE_WHO_LIKED_YOU' || featKey === 'LIKES') {
+          featureList.push('See Who Liked Your Profile');
+        } else {
+          featureList.push(f.featureName || f.featureKey);
         }
       });
-    } else {
-      if (currentTier === 'Gold') {
-        permissions.swipes = { isAllowed: true, limitValue: -1, isUnlimited: true };
-        permissions.superLikes = { isAllowed: true, limitValue: 5 };
-        permissions.search = { isAllowed: true };
-        permissions.likes = { isAllowed: true };
-      } else if (currentTier === 'Premium') {
-        permissions.swipes = { isAllowed: true, limitValue: 3, isUnlimited: false };
-        permissions.superLikes = { isAllowed: true, limitValue: 1 };
-        permissions.search = { isAllowed: true };
-        permissions.likes = { isAllowed: true };
+    }
+
+    if (featureList.length === 0) {
+      if (permissions.swipes?.isAllowed) {
+        featureList.push(permissions.swipes.isUnlimited ? 'Unlimited Likes & Swipes' : `${permissions.swipes.limitValue} Swipes per day`);
+      }
+      if (permissions.superLikes?.isAllowed && permissions.superLikes.limitValue > 0) {
+        featureList.push(`${permissions.superLikes.limitValue} Super Likes per day`);
+      }
+      if (permissions.search?.isAllowed) {
+        featureList.push('Unlock All Advanced Search Filters');
+      }
+      if (permissions.likes?.isAllowed) {
+        featureList.push('See Who Liked Your Profile');
       }
     }
 
@@ -691,14 +697,14 @@ exports.handleWebhook = async (req, res) => {
 exports.handleSuccessPage = async (req, res) => {
   const { session_id, userId, planType } = req.query;
 
-  console.log(`🎉 [BACKEND SUBSCRIPTION STEP 7: SUCCESS_PAGE_LANDED] Session: ${session_id}, User: ${userId}, Plan: ${planType}`);
+  console.log(`🎉 [BACKEND SUBSCRIPTION: SUCCESS_PAGE_LANDED] Session: ${session_id}, User: ${userId}, Plan: ${planType}`);
 
   if (userId && planType) {
     try {
       await User.findByIdAndUpdate(userId, {
         $set: { subscriptionTier: planType, subscriptionStatus: 'active' }
       });
-      console.log(`✅ [BACKEND SUBSCRIPTION STEP 7: AUTO_ACTIVATED] User ${userId} upgraded to ${planType} plan on success page landing.`);
+      console.log(`✅ [BACKEND SUBSCRIPTION: AUTO_ACTIVATED] User ${userId} upgraded to ${planType} plan on success page landing.`);
     } catch (e) {
       console.warn('⚠️ Auto activation warning:', e.message);
     }
@@ -709,22 +715,195 @@ exports.handleSuccessPage = async (req, res) => {
     <html>
       <head>
         <title>Payment Successful 🎉</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
         <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0F172A; color: #FFFFFF; text-align: center; padding: 40px 20px; }
-          .card { background: #1E293B; border-radius: 16px; padding: 40px 20px; max-width: 480px; margin: 0 auto; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-          h1 { color: #4ADE80; font-size: 28px; margin-bottom: 12px; }
-          p { color: #94A3B8; font-size: 16px; line-height: 1.5; }
-          .badge { display: inline-block; background: #22C55E; color: #fff; font-weight: bold; padding: 8px 16px; border-radius: 20px; margin-top: 15px; }
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #0B0E14;
+            color: #FFFFFF;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+          }
+          .header-bar {
+            width: 100%;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(21, 26, 35, 0.8);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+          }
+          .header-back-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 255, 255, 0.08);
+            color: #FFFFFF;
+            font-size: 14px;
+            font-weight: 700;
+            padding: 10px 18px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+          }
+          .header-back-btn:active {
+            background: rgba(255, 255, 255, 0.18);
+            transform: scale(0.96);
+          }
+          .main-content {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            width: 100%;
+          }
+          .card {
+            background: #151A23;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 28px;
+            padding: 44px 28px;
+            max-width: 440px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 24px 48px rgba(0, 0, 0, 0.6);
+            animation: fadeIn 0.4s ease-out;
+          }
+          @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(16px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          .icon-wrapper {
+            width: 80px;
+            height: 80px;
+            background: rgba(34, 197, 94, 0.15);
+            border: 2px solid #22C55E;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px auto;
+            color: #22C55E;
+            font-size: 40px;
+            font-weight: bold;
+          }
+          h1 {
+            color: #FFFFFF;
+            font-size: 26px;
+            font-weight: 800;
+            margin-bottom: 8px;
+            letter-spacing: -0.5px;
+          }
+          .plan-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #FE3C72, #FF655B);
+            color: #FFFFFF;
+            font-weight: 700;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 6px 16px;
+            border-radius: 20px;
+            margin-bottom: 16px;
+          }
+          p.desc {
+            color: #94A3B8;
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 32px;
+          }
+          .back-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            width: 100%;
+            background: linear-gradient(135deg, #FE3C72, #FF655B);
+            color: #FFFFFF;
+            font-size: 17px;
+            font-weight: 700;
+            text-decoration: none;
+            padding: 16px;
+            border-radius: 16px;
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 10px 25px rgba(254, 60, 114, 0.4);
+            transition: all 0.2s ease;
+          }
+          .back-btn:active {
+            transform: scale(0.98);
+            opacity: 0.9;
+          }
         </style>
       </head>
       <body>
-        <div class="card">
-          <h1>🎉 Payment Successful!</h1>
-          <p>Thank you for subscribing to <strong>${planType || 'Premium'} Membership</strong>.</p>
-          <div class="badge">Status: Active</div>
-          <p style="margin-top: 25px;">You can now close this tab and return to your app!</p>
+        <div class="header-bar">
+          <button class="header-back-btn" onclick="backToApp()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+            <span>Back to App</span>
+          </button>
         </div>
+
+        <div class="main-content">
+          <div class="card">
+            <div class="icon-wrapper">✓</div>
+            <div class="plan-badge">${planType || 'Premium'} Plan</div>
+            <h1>Payment Successful!</h1>
+            <p class="desc">
+              Your subscription has been activated successfully! All features included in your plan are now unlocked. Tapping below returns to the app.
+            </p>
+            <button class="back-btn" onclick="backToApp()">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+              <span>Return to App</span>
+            </button>
+          </div>
+        </div>
+
+        <script>
+          function backToApp() {
+            try {
+              if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
+                window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BACK_TO_APP' }));
+              }
+            } catch(e) {}
+            window.location.href = '/api/subscriptions/back-to-app';
+          }
+        </script>
+      </body>
+    </html>
+  `);
+};
+
+exports.handleBackToApp = async (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script>
+          try {
+            if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
+              window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'BACK_TO_APP' }));
+            }
+          } catch(e) {}
+          setTimeout(function() {
+            window.location.href = 'datingapp://';
+          }, 300);
+        </script>
+      </head>
+      <body style="background:#0B0E14;color:#FFF;font-family:-apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:50px 20px;">
+        <h2>Redirecting to App...</h2>
+        <p style="color:#94A3B8;margin-top:10px;">You may safely close this window to return to the app.</p>
       </body>
     </html>
   `);
