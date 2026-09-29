@@ -69,6 +69,9 @@ const auth = async (req, res, next) => {
     if (mongoose.connection.readyState === 1) {
       try {
         user = await User.findById(userId).lean();
+        if (!user && decoded.email) {
+          user = await User.findOne({ email: decoded.email.toString().trim().toLowerCase() }).lean();
+        }
       } catch (dbErr) {
         console.warn('[AUTH MIDDLEWARE] DB fetch failed, using token payload fallback:', dbErr.message);
       }
@@ -78,6 +81,24 @@ const auth = async (req, res, next) => {
       // Create minimal decoded user object so authentication succeeds instantly
       user = { _id: userId, id: userId, email: decoded.email };
     } else {
+      // Check if user account was deactivated by admin
+      if (
+        user.isActive === false ||
+        user.status === 'deactivated' ||
+        user.isDeactivated === true ||
+        Boolean(user.deactivatedAt)
+      ) {
+        return res.status(403).json({
+          success: false,
+          code: 'ACCOUNT_DEACTIVATED',
+          isInactive: true,
+          status: 'deactivated',
+          isDeactivated: true,
+          message: 'Your account has been deactivated by the admin. Please contact support.',
+          reason: user.deactivationReason || 'Account deactivated by admin',
+        });
+      }
+
       // Check single-device active token enforcement
       if (!user.currentToken || user.currentToken !== token) {
         return res.status(401).json({

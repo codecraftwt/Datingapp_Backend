@@ -14,7 +14,7 @@ const isBackendVideoUrl = (url) => {
 
 const checkIsOnline = (user) => {
   if (!user) return false;
-  if (user.isLoggedIn === false) return false;
+  if (user.isLoggedIn === false || user.isOnline === false) return false;
   const uIdStr = (user._id || user.id || user).toString();
 
   const hasOnlineUserMap = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;

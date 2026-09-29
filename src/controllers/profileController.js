@@ -7,6 +7,13 @@ const Report = require('../models/Report');
 const fs = require('fs');
 const path = require('path');
 const cloudinary = require('cloudinary').v2;
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRETS = [
+  process.env.JWT_SECRET,
+  'super_secret_dating_app_token_key_123!',
+  'fallback_secret',
+].filter(Boolean);
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'dwwykeft2',
@@ -43,7 +50,7 @@ const checkIsOnline = (user) => {
     return false;
   }
 
-  if (user.isLoggedIn === false) return false;
+  if (user.isLoggedIn === false || user.isOnline === false) return false;
 
   const uIdStr = (user._id || user.id || user).toString();
 
@@ -1156,13 +1163,11 @@ exports.getOnlineStatusMap = async (req, res) => {
 
     const activeSocketIds = global.onlineUsers ? Array.from(global.onlineUsers.keys()) : [];
     
-    // Fetch users whose isOnline is true or lastSeen within last 5 minutes
-    const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000);
+    // Fetch users whose isOnline is true
     const dbOnlineUsers = await User.find({
       $or: [
-        { _id: { $in: activeSocketIds } },
-        { isOnline: true },
-        { isLoggedIn: true, lastSeen: { $gte: fiveMinsAgo } }
+        { _id: { $in: activeSocketIds }, isOnline: true },
+        { isOnline: true }
       ]
     }).select('_id isOnline lastSeen');
 
@@ -1679,7 +1684,7 @@ exports.removeMainPhoto = async (req, res) => {
       req.user._id,
       {
         $set: {
-          profileImage: updatedProfileImages[0] || null,
+          profileImage: null,
           profileImages: updatedProfileImages,
           photos: updatedPhotos,
           videos: updatedVideos,
@@ -1731,7 +1736,6 @@ exports.uploadGalleryMedia = async (req, res) => {
       const uploadOptions = {
         folder: 'dating_app_profiles',
         resource_type: resType,
-        transformation: isVideo ? [{ start_offset: '0', end_offset: '15' }] : undefined,
         eager_async: true,
         timeout: 180000,
       };
@@ -2386,3 +2390,82 @@ exports.activateProfileBoost = async (req, res) => {
     return res.status(500).json({ message: 'Failed to activate profile boost.' });
   }
 };
+
+/**
+ * GET /api/profile/account-status
+ * Checks if logged-in user's account is active or deactivated by admin.
+ * Resilient to token / single-device so deactivated status is always returned accurately.
+ */
+exports.getAccountStatus = async (req, res) => {
+  try {
+    let userId = req.user?._id || req.user?.id || req.query?.userId || req.body?.userId;
+    const email = req.query?.email || req.body?.email;
+
+    if (!userId && !email) {
+      const authHeader = req.header('Authorization');
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.replace('Bearer ', '').trim();
+        for (const secret of JWT_SECRETS) {
+          try {
+            const decoded = jwt.verify(token, secret);
+            if (decoded) {
+              userId = decoded.userId || decoded.id;
+              break;
+            }
+          } catch (e) {}
+        }
+        if (!userId) {
+          try {
+            const decoded = jwt.decode(token);
+            if (decoded) {
+              userId = decoded.userId || decoded.id;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+
+    let user = null;
+    if (userId) {
+      user = await User.findById(userId).select('status isActive deactivatedAt deactivationReason name firstName email').lean();
+    } else if (email) {
+      user = await User.findOne({ email: email.toString().trim().toLowerCase() }).select('status isActive deactivatedAt deactivationReason name firstName email').lean();
+    }
+
+    if (!user) {
+      if (!userId && !email) {
+        return res.status(401).json({ success: false, message: 'Unauthorized session or missing credentials.' });
+      }
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
+    const isDeactivated =
+      user.isActive === false ||
+      user.status === 'deactivated' ||
+      user.isDeactivated === true ||
+      Boolean(user.deactivatedAt);
+
+    if (isDeactivated) {
+      return res.status(200).json({
+        success: true,
+        status: 'deactivated',
+        isActive: false,
+        isDeactivated: true,
+        reason: user.deactivationReason || 'Your account has been deactivated by the admin. Please contact support.',
+        deactivatedAt: user.deactivatedAt,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      status: 'active',
+      isActive: true,
+      isDeactivated: false,
+    });
+  } catch (error) {
+    console.error('getAccountStatus error:', error);
+    return res.status(500).json({ success: false, message: 'Server error checking account status.' });
+  }
+};
+
+

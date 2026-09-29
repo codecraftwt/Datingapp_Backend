@@ -239,6 +239,25 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Invalid email or password.' });
     }
 
+    // Check if account has been deactivated by admin
+    const isUserDeactivated =
+      user.isActive === false ||
+      user.status === 'deactivated' ||
+      user.isDeactivated === true ||
+      Boolean(user.deactivatedAt);
+
+    if (isUserDeactivated) {
+      return res.status(403).json({
+        success: false,
+        status: 'deactivated',
+        code: 'ACCOUNT_DEACTIVATED',
+        isInactive: true,
+        isDeactivated: true,
+        message: 'Your account has been deactivated by the admin. Please contact support.',
+        reason: user.deactivationReason || 'Account deactivated by admin',
+      });
+    }
+
     // Single-device login check: If active valid token exists in DB and forceLogoutAll is false, block login
     if (user.currentToken && forceLogoutAll !== true) {
       let isTokenActive = false;
@@ -374,38 +393,59 @@ exports.login = async (req, res) => {
 };
 
 /**
- * Log user out (sets isLoggedIn to false)
+ * Log user out (sets isLoggedIn to false, clears socket status, always returns 200)
  */
 exports.logout = async (req, res) => {
   try {
-    const userId = req.user._id;
-    const lastSeenDate = new Date();
+    let userId = req.user?._id || req.user?.id;
 
-    const user = await User.findById(userId);
-    if (user) {
-      user.isLoggedIn = false;
-      user.lastSeen = lastSeenDate;
-      user.fcmToken = null;
-      await user.save();
+    // If not populated by middleware, attempt to decode token from Authorization header gracefully
+    if (!userId) {
+      const authHeader = req.header('Authorization');
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.replace('Bearer ', '').trim();
+        for (const secret of JWT_SECRETS) {
+          try {
+            const decoded = jwt.verify(token, secret);
+            if (decoded) {
+              userId = decoded.userId || decoded.id;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
     }
 
-    if (global.onlineUsers) {
-      global.onlineUsers.delete(userId.toString());
+    if (userId) {
+      const lastSeenDate = new Date();
+      await User.findByIdAndUpdate(userId, {
+        $set: {
+          isLoggedIn: false,
+          isOnline: false,
+          lastSeen: lastSeenDate,
+          fcmToken: null,
+          currentToken: null,
+        },
+      }).catch(() => {});
+
+      if (global.onlineUsers) {
+        global.onlineUsers.delete(userId.toString());
+      }
+
+      const io = req.app ? req.app.get('io') : null;
+      if (io) {
+        io.emit('user_status', {
+          userId: userId.toString(),
+          status: 'offline',
+          lastSeen: lastSeenDate.toISOString(),
+        });
+      }
     }
 
-    const io = req.app ? req.app.get('io') : null;
-    if (io) {
-      io.emit('user_status', {
-        userId: userId.toString(),
-        status: 'offline',
-        lastSeen: lastSeenDate.toISOString(),
-      });
-    }
-
-    return res.status(200).json({ message: 'Logged out successfully' });
+    return res.status(200).json({ success: true, message: 'Logged out successfully' });
   } catch (error) {
     console.error('Logout error:', error);
-    return res.status(500).json({ message: 'Server error during logout.' });
+    return res.status(200).json({ success: true, message: 'Logged out successfully' });
   }
 };
 
@@ -509,6 +549,16 @@ exports.forgotPassword = async (req, res) => {
     });
     if (!user) {
       return res.status(404).json({ message: 'User with this email does not exist.' });
+    }
+
+    if (user.isActive === false) {
+      return res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_DEACTIVATED',
+        isInactive: true,
+        message: 'Your account has been deactivated by the admin. Please contact support.',
+        reason: user.deactivationReason || 'Account deactivated by admin',
+      });
     }
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();

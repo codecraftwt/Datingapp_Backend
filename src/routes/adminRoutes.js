@@ -22,6 +22,13 @@ router.put('/reports/:reportId', adminController.updateReportStatus);
 // 6. Admin Issue Warning to Reported User API Endpoint
 router.post('/warn-user', adminController.warnUser);
 
+// 7. Admin Toggle User Active / Inactive Status API Endpoint
+router.patch('/users/:userId/status', adminController.updateUserStatus);
+router.put('/users/:userId/status', adminController.updateUserStatus);
+
+// 8. Admin Fetch Subscription Taken by Particular User API Endpoint
+router.get('/users/:userId/subscription', adminController.getUserSubscriptionDetail);
+
 // --- Dynamic Feature Management APIs ---
 router.post('/features', featureController.createFeature);
 router.get('/features', featureController.getAllFeatures);

@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const Admin = require('../models/Admin');
 const User = require('../models/User');
 const Report = require('../models/Report');
+const Subscription = require('../models/Subscription');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_dating_app_token_key_123!';
 const STATIC_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'admin@datingapp.com').toLowerCase();
@@ -192,6 +193,8 @@ exports.getAllRegisteredUsers = async (req, res) => {
       all,
       sortBy = 'createdAt',
       order = 'desc',
+      status,
+      accountStatus,
     } = req.query;
 
     const filter = {};
@@ -224,6 +227,16 @@ exports.getAllRegisteredUsers = async (req, res) => {
       filter.isLoggedIn = isLoggedIn === 'true';
     }
 
+    // 4. Account Active / Inactive Status Filter
+    const targetStatus = status || accountStatus;
+    if (targetStatus && targetStatus !== 'all') {
+      if (targetStatus === 'inactive' || targetStatus === 'false') {
+        filter.isActive = false;
+      } else if (targetStatus === 'active' || targetStatus === 'true') {
+        filter.isActive = { $ne: false };
+      }
+    }
+
     // Sort order setup
 /**
  * Helper to check if a user is currently online:
@@ -235,8 +248,8 @@ exports.getAllRegisteredUsers = async (req, res) => {
 const checkIsOnline = (user) => {
   if (!user) return false;
 
-  // Condition 1: User is logged in
-  if (user.isLoggedIn === false) return false;
+  // Condition 1: User is logged in and not set to offline
+  if (user.isLoggedIn === false || user.isOnline === false) return false;
 
   const uIdStr = (user._id || user.id || user).toString();
 
@@ -268,11 +281,13 @@ const checkIsOnline = (user) => {
     const sortObj = { [sortBy]: sortOrder };
 
     const totalUsersCount = await User.countDocuments({});
+    const activeUsersCount = await User.countDocuments({ isActive: { $ne: false } });
+    const inactiveUsersCount = await User.countDocuments({ isActive: false });
     const menCount = await User.countDocuments({ gender: /^(men|man|male)$/i });
     const womenCount = await User.countDocuments({ gender: /^(women|woman|female)$/i });
 
     let query = User.find(filter)
-      .select('name firstName email mobile gender age orientation interestedIn lookingFor profileImage profileImages fcmToken isLoggedIn isOnline lastSeen createdAt updatedAt warnings')
+      .select('name firstName email mobile gender age orientation interestedIn lookingFor profileImage profileImages fcmToken isLoggedIn isOnline isActive deactivatedAt deactivationReason lastSeen createdAt updatedAt warnings subscriptionTier subscriptionStatus stripeCustomerId')
       .sort(sortObj);
 
     let pageNum = parseInt(page, 10) || 1;
@@ -285,14 +300,61 @@ const checkIsOnline = (user) => {
     const rawUsers = await query.lean();
     const filteredCount = await User.countDocuments(filter);
 
+    // Fetch subscription records and plan details for the users
+    const userIds = rawUsers.map((u) => u._id);
+    let userSubscriptions = [];
+    const plansMap = new Map();
+    try {
+      userSubscriptions = await Subscription.find({ userId: { $in: userIds } }).sort({ createdAt: -1 }).lean();
+      const Plan = require('../models/Plan');
+      const allPlans = await Plan.find().lean();
+      (allPlans || []).forEach((p) => {
+        if (p.planKey) plansMap.set(p.planKey.toLowerCase(), p.name);
+      });
+    } catch (subErr) {
+      console.error('Error fetching subscriptions for user list:', subErr);
+    }
+
     let activeOnlineCalcCount = 0;
     const users = rawUsers.map((u) => {
       const isOnline = checkIsOnline(u);
       if (isOnline) activeOnlineCalcCount++;
+
+      const uIdStr = u._id.toString();
+      const userSubs = userSubscriptions.filter((s) => (s.userId?._id || s.userId)?.toString() === uIdStr);
+      const userSub = userSubs.find((s) => s.status === 'active') || userSubs[0] || null;
+
+      const rawPlanType = userSub ? userSub.planType : (u.subscriptionTier || 'Free');
+      const resolvedPlanName = plansMap.get(rawPlanType?.toLowerCase()) || (rawPlanType ? rawPlanType.charAt(0).toUpperCase() + rawPlanType.slice(1) : 'Free');
+
       return {
         ...u,
+        isActive: u.isActive !== false,
         isOnline,
         isLoggedIn: u.isLoggedIn === true,
+        subscriptionTier: rawPlanType,
+        subscriptionPlanName: resolvedPlanName,
+        subscriptionStatus: userSub ? userSub.status : (u.subscriptionStatus || 'inactive'),
+        subscription: userSub ? {
+          _id: userSub._id,
+          id: userSub._id,
+          planType: userSub.planType,
+          planName: resolvedPlanName,
+          status: userSub.status,
+          currentPeriodStart: userSub.currentPeriodStart,
+          currentPeriodEnd: userSub.currentPeriodEnd,
+          stripeCustomerId: userSub.stripeCustomerId || u.stripeCustomerId || null,
+          stripeSubscriptionId: userSub.stripeSubscriptionId || null,
+          cancelAtPeriodEnd: userSub.cancelAtPeriodEnd || false,
+          createdAt: userSub.createdAt,
+        } : {
+          planType: u.subscriptionTier || 'Free',
+          planName: resolvedPlanName,
+          status: u.subscriptionStatus || 'inactive',
+          currentPeriodStart: null,
+          currentPeriodEnd: null,
+          stripeCustomerId: u.stripeCustomerId || null,
+        },
       };
     });
 
@@ -303,6 +365,8 @@ const checkIsOnline = (user) => {
       message: 'Fetched all registered users successfully.',
       analytics: {
         totalUsers: totalUsersCount,
+        activeUsers: activeUsersCount,
+        inactiveUsers: inactiveUsersCount,
         onlineUsers: onlineUsersCount,
         genderBreakdown: {
           men: menCount,
@@ -509,7 +573,7 @@ exports.warnUser = async (req, res) => {
   try {
     const mongoose = require('mongoose');
     const User = require('../models/User');
-    const { reportedId, category, message, severity } = req.body;
+    const { reportedId, category, message, severity, reportId } = req.body;
 
     if (!reportedId || !category || !message) {
       return res.status(400).json({
@@ -540,17 +604,37 @@ exports.warnUser = async (req, res) => {
     user.warnings.unshift(newWarning);
     await user.save();
 
-    // Create Report entry so warning appears in Admin Panel Reports tab
+    // Update existing report card instead of creating a duplicate card
     try {
-      await Report.create({
-        reporterId: (req.user && req.user._id && req.user._id.toString() !== user._id.toString()) ? req.user._id : null,
-        reportedId: user._id,
-        reason: `[${category.trim()}] ${message.trim()}`,
-        details: `Severity: ${(severity || 'high').toUpperCase()} | Issued by Admin Moderation Team`,
-        status: 'reviewed',
-      });
+      if (reportId && mongoose.Types.ObjectId.isValid(reportId)) {
+        await Report.findByIdAndUpdate(reportId, {
+          $set: {
+            reason: `[${category.trim()}] ${message.trim()}`,
+            details: `Severity: ${(severity || 'high').toUpperCase()} | Issued by Admin Moderation Team`,
+            status: 'reviewed',
+            warningIssuedAt: new Date(),
+          },
+        });
+      } else {
+        const existingReport = await Report.findOne({ reportedId: user._id }).sort({ createdAt: -1 });
+        if (existingReport) {
+          existingReport.reason = `[${category.trim()}] ${message.trim()}`;
+          existingReport.details = `Severity: ${(severity || 'high').toUpperCase()} | Issued by Admin Moderation Team`;
+          existingReport.status = 'reviewed';
+          existingReport.warningIssuedAt = new Date();
+          await existingReport.save();
+        } else {
+          await Report.create({
+            reporterId: (req.user && req.user._id && req.user._id.toString() !== user._id.toString()) ? req.user._id : null,
+            reportedId: user._id,
+            reason: `[${category.trim()}] ${message.trim()}`,
+            details: `Severity: ${(severity || 'high').toUpperCase()} | Issued by Admin Moderation Team`,
+            status: 'reviewed',
+          });
+        }
+      }
     } catch (rErr) {
-      console.error('Error creating report record for warning:', rErr);
+      console.error('Error updating report record for warning:', rErr);
     }
 
     // Emit live Socket.IO event if reported user is currently online
@@ -577,3 +661,221 @@ exports.warnUser = async (req, res) => {
     });
   }
 };
+
+/**
+ * PATCH /api/admin/users/:userId/status
+ * Activate or Deactivate User Account
+ */
+exports.updateUserStatus = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { isActive, reason } = req.body;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or missing userId.',
+      });
+    }
+
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'isActive must be a boolean (true or false).',
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found in database.',
+      });
+    }
+
+    const updateFields = {
+      isActive,
+      status: isActive ? 'active' : 'deactivated',
+      deactivatedAt: isActive ? null : new Date(),
+      deactivationReason: isActive ? null : ((reason && reason.trim()) || 'Deactivated by admin moderation team'),
+      currentToken: isActive ? user.currentToken : null,
+      isLoggedIn: isActive ? user.isLoggedIn : false,
+      isOnline: isActive ? user.isOnline : false,
+    };
+
+    user.isActive = updateFields.isActive;
+    user.status = updateFields.status;
+    user.deactivatedAt = updateFields.deactivatedAt;
+    user.deactivationReason = updateFields.deactivationReason;
+    user.currentToken = updateFields.currentToken;
+    user.isLoggedIn = updateFields.isLoggedIn;
+    user.isOnline = updateFields.isOnline;
+
+    await User.findByIdAndUpdate(userId, { $set: updateFields });
+    try {
+      await user.save();
+    } catch (saveErr) {
+      console.warn('user.save() schema warning (bypassed with findByIdAndUpdate):', saveErr.message);
+    }
+
+    // If deactivating, emit live Socket.IO event to disconnect user immediately
+    try {
+      const io = req.app.get('io') || global.io;
+      if (io) {
+        const uIdStr = user._id.toString();
+        if (!isActive) {
+          const deactPayload = {
+            status: 'deactivated',
+            isActive: false,
+            isDeactivated: true,
+            message: user.deactivationReason || 'Your account has been deactivated by the admin. Please contact support.',
+            reason: user.deactivationReason || 'Account deactivated by admin moderation team',
+            deactivatedAt: user.deactivatedAt,
+            code: 'ACCOUNT_DEACTIVATED',
+          };
+
+          io.to(uIdStr).emit('account_deactivated', deactPayload);
+
+          if (global.onlineUsers && global.onlineUsers.get) {
+            const socketId = global.onlineUsers.get(uIdStr);
+            if (socketId) {
+              io.to(socketId).emit('account_deactivated', deactPayload);
+              setTimeout(() => {
+                try {
+                  const s = io.sockets.sockets.get(socketId);
+                  if (s) s.disconnect(true);
+                } catch (e) {}
+              }, 400);
+            }
+          }
+        }
+        io.to(uIdStr).emit('account_status_changed', {
+          status: user.status,
+          isActive,
+          isDeactivated: !isActive,
+          reason: user.deactivationReason,
+          deactivatedAt: user.deactivatedAt,
+        });
+      }
+    } catch (socketErr) {
+      console.warn('Socket error on updateUserStatus:', socketErr.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: isActive
+        ? `Account for ${user.name || user.firstName || 'user'} has been activated successfully.`
+        : `Account for ${user.name || user.firstName || 'user'} has been deactivated successfully.`,
+      user: {
+        id: user._id,
+        _id: user._id,
+        name: user.name,
+        firstName: user.firstName,
+        email: user.email,
+        isActive: user.isActive,
+        deactivatedAt: user.deactivatedAt,
+        deactivationReason: user.deactivationReason,
+      },
+    });
+  } catch (error) {
+    console.error('updateUserStatus error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while updating user status.',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * GET /api/admin/users/:userId/subscription
+ * Fetch detailed subscription info for a particular user
+ */
+exports.getUserSubscriptionDetail = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or missing userId.',
+      });
+    }
+
+    const user = await User.findById(userId).select('name firstName email mobile subscriptionTier subscriptionStatus stripeCustomerId createdAt').lean();
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found.',
+      });
+    }
+
+    const Plan = require('../models/Plan');
+    const subscriptionHistory = await Subscription.find({ userId: user._id }).sort({ createdAt: -1 }).lean();
+    const activeSubscription = subscriptionHistory.find((s) => s.status === 'active') || subscriptionHistory[0] || null;
+
+    let planDetails = null;
+    if (activeSubscription) {
+      planDetails = await Plan.findOne({ planKey: activeSubscription.planType }).lean();
+    } else if (user.subscriptionTier && user.subscriptionTier !== 'Free') {
+      planDetails = await Plan.findOne({ planKey: user.subscriptionTier }).lean();
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Fetched subscription details for user ${user.name || user.firstName || user.email}`,
+      user: {
+        id: user._id,
+        _id: user._id,
+        name: user.name || user.firstName || 'User',
+        email: user.email,
+        mobile: user.mobile,
+        subscriptionTier: user.subscriptionTier || 'Free',
+        subscriptionStatus: user.subscriptionStatus || 'inactive',
+        stripeCustomerId: user.stripeCustomerId || null,
+        joinedAt: user.createdAt,
+      },
+      activeSubscription: activeSubscription ? {
+        id: activeSubscription._id,
+        _id: activeSubscription._id,
+        planType: activeSubscription.planType,
+        status: activeSubscription.status,
+        currentPeriodStart: activeSubscription.currentPeriodStart,
+        currentPeriodEnd: activeSubscription.currentPeriodEnd,
+        stripeCustomerId: activeSubscription.stripeCustomerId,
+        stripeSubscriptionId: activeSubscription.stripeSubscriptionId,
+        cancelAtPeriodEnd: activeSubscription.cancelAtPeriodEnd || false,
+        createdAt: activeSubscription.createdAt,
+      } : {
+        planType: user.subscriptionTier || 'Free',
+        status: user.subscriptionStatus || 'inactive',
+        currentPeriodStart: null,
+        currentPeriodEnd: null,
+        stripeCustomerId: user.stripeCustomerId || null,
+      },
+      planDetails: planDetails ? {
+        name: planDetails.name,
+        price: planDetails.price,
+        currency: planDetails.currency || 'USD',
+        billingCycle: planDetails.billingCycle || 'monthly',
+        features: planDetails.features || [],
+      } : null,
+      subscriptionHistory: subscriptionHistory.map((s) => ({
+        id: s._id,
+        _id: s._id,
+        planType: s.planType,
+        status: s.status,
+        currentPeriodStart: s.currentPeriodStart,
+        currentPeriodEnd: s.currentPeriodEnd,
+        createdAt: s.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error('getUserSubscriptionDetail error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error while fetching user subscription details.',
+      error: error.message,
+    });
+  }
+};
+

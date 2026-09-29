@@ -50,7 +50,7 @@ app.set('etag', false);
 // Middleware
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cache-Control', 'Pragma', 'Expires'],
 }));
 app.use(express.json({ limit: '1000mb' }));
@@ -163,7 +163,7 @@ app.use((req, res, next) => {
     if (req.body && Object.keys(req.body).length > 0) {
       console.log(`📦 [REQUEST BODY]`, req.body);
     }
-    
+
     res.on('finish', () => {
       console.log(`🏁 [API RESPONSE] ${req.method} ${url} -> Status: ${res.statusCode} (${Date.now() - start}ms)`);
       console.log(`==================================================\n`);
@@ -236,7 +236,7 @@ setInterval(async () => {
       const lastSeenDate = new Date(lastPingTime);
       try {
         await User.findByIdAndUpdate(userId, { isOnline: false, lastSeen: lastSeenDate });
-      } catch (e) {}
+      } catch (e) { }
 
       io.emit('user_status', {
         userId: userId.toString(),
@@ -257,14 +257,36 @@ io.on('connection', (socket) => {
     const uIdStr = extractUserIdStr(userId);
     console.log(`📥 [SOCKET JOIN EVENT] Raw userId received:`, JSON.stringify(userId), `-> Extracted ID: "${uIdStr}"`);
     if (uIdStr) {
+      // Deactivated user check
+      try {
+        const dbUser = await User.findById(uIdStr).lean();
+        const isDbUserDeactivated = dbUser && (dbUser.isActive === false || dbUser.status === 'deactivated' || dbUser.isDeactivated === true || Boolean(dbUser.deactivatedAt));
+        if (isDbUserDeactivated) {
+          console.warn(`🛑 [SOCKET BLOCKED] User ${uIdStr} is deactivated by admin. Rejecting socket connection.`);
+          socket.emit('account_deactivated', {
+            status: 'deactivated',
+            isActive: false,
+            isDeactivated: true,
+            message: dbUser.deactivationReason || 'Your account has been deactivated by the admin. Please contact support.',
+            reason: dbUser.deactivationReason || 'Account deactivated by admin moderation team',
+            deactivatedAt: dbUser.deactivatedAt,
+            code: 'ACCOUNT_DEACTIVATED',
+          });
+          onlineUsers.delete(uIdStr);
+          userLastPing.delete(uIdStr);
+          socket.disconnect(true);
+          return;
+        }
+      } catch (err) { }
+
       socket.userId = uIdStr;
       const now = new Date();
       onlineUsers.set(uIdStr, socket.id);
       userLastPing.set(uIdStr, Date.now());
       socket.join(uIdStr);
-      
+
       console.log(`🔄 [STATUS CHANGED TO ONLINE] User "${uIdStr}" -> Reason: All 3 Conditions Met (Condition 1: Logged In=true, Condition 2: App Active=true, Condition 3: Network On=true)`);
-      
+
       // Update DB isLoggedIn & isOnline status & lastSeen
       try {
         await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, isOnline: true, lastSeen: now });
@@ -305,6 +327,26 @@ io.on('connection', (socket) => {
   socket.on('ping_presence', async (userId) => {
     const uIdStr = extractUserIdStr(userId);
     if (uIdStr) {
+      try {
+        const dbUser = await User.findById(uIdStr).lean();
+        const isDbUserDeactivated = dbUser && (dbUser.isActive === false || dbUser.status === 'deactivated' || dbUser.isDeactivated === true || Boolean(dbUser.deactivatedAt));
+        if (isDbUserDeactivated) {
+          socket.emit('account_deactivated', {
+            status: 'deactivated',
+            isActive: false,
+            isDeactivated: true,
+            message: dbUser.deactivationReason || 'Your account has been deactivated by the admin. Please contact support.',
+            reason: dbUser.deactivationReason || 'Account deactivated by admin moderation team',
+            deactivatedAt: dbUser.deactivatedAt,
+            code: 'ACCOUNT_DEACTIVATED',
+          });
+          onlineUsers.delete(uIdStr);
+          userLastPing.delete(uIdStr);
+          socket.disconnect(true);
+          return;
+        }
+      } catch (e) { }
+
       socket.userId = uIdStr;
       const now = new Date();
       const wasOnline = onlineUsers.has(uIdStr);
@@ -317,7 +359,7 @@ io.on('connection', (socket) => {
       }
       try {
         await User.findByIdAndUpdate(uIdStr, { isLoggedIn: true, isOnline: true, lastSeen: now });
-      } catch (dbErr) {}
+      } catch (dbErr) { }
     }
   });
 
@@ -331,7 +373,7 @@ io.on('connection', (socket) => {
       const lastSeenDate = new Date();
       try {
         await User.findByIdAndUpdate(uIdStr, { isOnline: false, lastSeen: lastSeenDate });
-      } catch (dbErr) {}
+      } catch (dbErr) { }
 
       io.emit('user_status', {
         userId: uIdStr,
@@ -342,8 +384,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle explicitly checking online status of a partner user
-  socket.on('check_online_status', async ({ targetUserId }) => {
+  // Presence log cache to prevent continuous spamming while still logging changes and periodic heartbeats
+  const presenceLogHistory = new Map();
+
+  // Handle explicitly checking online status of a partner user on chatting screen
+  socket.on('check_online_status', async (data) => {
+    const payload = typeof data === 'object' && data !== null ? data : { targetUserId: data };
+    const targetUserId = payload.targetUserId || payload.partnerId || payload.userId;
     const targetIdStr = extractUserIdStr(targetUserId);
     if (!targetIdStr) return;
 
@@ -351,23 +398,50 @@ io.on('connection', (socket) => {
     let lastSeen = null;
 
     try {
-      const targetUser = await User.findById(targetUserId).select('isOnline lastSeen isLoggedIn');
-      const cond1_loggedIn = targetUser ? targetUser.isLoggedIn === true : false;
-      const cond2_hasSocket = onlineUsers.has(targetIdStr);
-      const lastPing = userLastPing.get(targetIdStr);
-      const cond3_recentPing = !!(lastPing && (Date.now() - lastPing < 35000)) || cond2_hasSocket;
+      const viewerIdStr = extractUserIdStr(socket.userId || payload.viewerUserId || payload.currentUserId);
+      const [targetUser, viewerUser] = await Promise.all([
+        User.findById(targetUserId).select('name firstName isOnline lastSeen isLoggedIn').lean(),
+        viewerIdStr ? User.findById(viewerIdStr).select('name firstName isOnline lastSeen isLoggedIn').lean() : null,
+      ]);
 
-      isOnline = cond1_loggedIn && cond2_hasSocket && cond3_recentPing;
+      const cond1_loggedIn = targetUser ? (targetUser.isLoggedIn !== false && targetUser.isOnline !== false) : false;
+      const cond2_hasSocket = onlineUsers.has(targetIdStr) || (io.sockets.adapter.rooms.has(targetIdStr) && io.sockets.adapter.rooms.get(targetIdStr).size > 0);
+      const lastPing = userLastPing.get(targetIdStr);
+      const pingAgeSec = lastPing ? Math.round((Date.now() - lastPing) / 1000) : null;
+      const cond3_recentPing = cond2_hasSocket && (lastPing ? (Date.now() - lastPing < 35000) : true);
+
+      isOnline = Boolean(cond1_loggedIn && cond2_hasSocket && cond3_recentPing);
       if (targetUser && targetUser.lastSeen) {
-        lastSeen = targetUser.lastSeen.toISOString();
+        lastSeen = new Date(targetUser.lastSeen).toISOString();
       }
 
-      console.log(`📡 [SOCKET check_online_status] Target User "${targetIdStr}":`, {
-        Condition1_LoggedIn: cond1_loggedIn,
-        Condition2_ActiveSocket: cond2_hasSocket,
-        Condition3_NetworkPing: cond3_recentPing,
-        FINAL_STATUS: isOnline ? 'Online 🟢' : 'Offline 🔴'
-      });
+      const viewerName = viewerUser ? (viewerUser.firstName || viewerUser.name || 'User') : (viewerIdStr ? `User (${viewerIdStr})` : `Socket (${socket.id})`);
+      const partnerName = targetUser ? (targetUser.firstName || targetUser.name || 'User') : `User (${targetIdStr})`;
+      const displayStatus = isOnline ? 'Online 🟢' : `Offline 🔴 (Last Seen: ${lastSeen ? new Date(lastSeen).toLocaleTimeString() : 'N/A'})`;
+
+      const logKey = `${viewerIdStr || socket.id}->${targetIdStr}`;
+      const prevLog = presenceLogHistory.get(logKey);
+      const now = Date.now();
+      const statusChanged = !prevLog || prevLog.isOnline !== isOnline;
+      const timeSinceLastLog = prevLog ? (now - prevLog.time) : Infinity;
+
+      // Log immediately on status change or every 20 seconds during continuous chat polling
+      if (statusChanged || timeSinceLastLog >= 20000) {
+        presenceLogHistory.set(logKey, { isOnline, time: now });
+
+        console.log(`\n======================================================`);
+        console.log(`💬 [CHAT SCREEN PRESENCE STATUS]`);
+        console.log(`👤 Logged-in User (Viewer): "${viewerName}" (ID: ${viewerIdStr || socket.id})`);
+        console.log(`💬 Chat Partner (Target):   "${partnerName}" (ID: ${targetIdStr})`);
+        console.log(`📱 DISPLAYED ON CHAT SCREEN FOR LOGGED-IN USER:`);
+        console.log(`   👉 Partner Status: ${displayStatus}`);
+        console.log(`📋 Partner Presence Breakdown:`);
+        console.log(`   ├─ Cond 1 (Logged In in DB):  ${cond1_loggedIn ? '✅ Yes' : '❌ No'} (isLoggedIn: ${targetUser?.isLoggedIn}, isOnline: ${targetUser?.isOnline})`);
+        console.log(`   ├─ Cond 2 (Active Socket):    ${cond2_hasSocket ? '✅ Yes' : '❌ No'}`);
+        console.log(`   └─ Cond 3 (Network Ping):     ${cond3_recentPing ? '✅ Yes' : '❌ No'}${pingAgeSec !== null ? ` (last ping ${pingAgeSec}s ago)` : ''}`);
+        console.log(`   => Conclusion: ${isOnline ? 'Partner is active on app with network -> displays "Online 🟢"' : 'Partner closed app/disconnected -> displays "Offline 🔴"'}`);
+        console.log(`======================================================\n`);
+      }
     } catch (err) {
       console.error('Error fetching online status for target user:', err);
     }
@@ -478,19 +552,19 @@ io.on('connection', (socket) => {
         let notificationTitle = `💬 ${senderName}`;
 
         if (messageType === 'voice') {
-          notificationTitle = `🎤 Voice Message from ${senderName}`;
-          notificationText = '🎤 Sent a voice note / audio message';
+          notificationTitle = `Voice Message from ${senderName}`;
+          notificationText = ' Sent a voice note / audio message';
         } else if (messageType === 'call') {
-          notificationTitle = `📞 Voice Call from ${senderName}`;
-          notificationText = text || '📞 Voice call';
+          notificationTitle = ` Voice Call from ${senderName}`;
+          notificationText = text || ' Voice call';
         } else if (messageType === 'image') {
-          notificationText = '📷 Sent a photo';
+          notificationText = 'Sent a photo';
         } else if (messageType === 'video') {
-          notificationText = '🎬 Sent a video';
+          notificationText = 'Sent a video';
         } else if (messageType === 'document') {
-          notificationText = '📄 Sent a document';
+          notificationText = ' Sent a document';
         } else if (messageType === 'sticker') {
-          notificationText = '😊 Sent a sticker';
+          notificationText = ' Sent a sticker';
         } else if (text) {
           notificationText = text;
         }
@@ -506,7 +580,7 @@ io.on('connection', (socket) => {
             notificationId: msgId.toString(),
           }
         }).catch(err => console.error('Chat FCM push error:', err));
-      }).catch(() => {});
+      }).catch(() => { });
     } catch (err) {
       console.error('Error handling send_message socket event:', err);
       if (typeof callback === 'function') {
@@ -678,7 +752,7 @@ io.on('connection', (socket) => {
     if (!callerId || !receiverId) return;
     const rIdStr = receiverId.toString();
     const cIdStr = callerId.toString();
-    
+
     io.to(rIdStr).emit('call_ended', { by: cIdStr });
     io.to(cIdStr).emit('call_ended', { by: rIdStr });
 
@@ -726,11 +800,11 @@ io.on('connection', (socket) => {
       }
 
       // Broadcast offline status and lastSeen to all clients
-      io.emit('user_status', { 
-        userId: uIdStr, 
-        status: 'offline', 
+      io.emit('user_status', {
+        userId: uIdStr,
+        status: 'offline',
         isOnline: false,
-        lastSeen: lastSeenDate.toISOString() 
+        lastSeen: lastSeenDate.toISOString()
       });
     }
   });

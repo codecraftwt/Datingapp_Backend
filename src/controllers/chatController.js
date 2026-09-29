@@ -16,7 +16,7 @@ cloudinary.config({
 
 const checkIsOnline = (user) => {
   if (!user) return false;
-  if (user.isLoggedIn === false) return false;
+  if (user.isLoggedIn === false || user.isOnline === false) return false;
   const uIdStr = (user._id || user.id || user).toString();
 
   const hasOnlineUserMap = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
@@ -153,11 +153,43 @@ exports.getChatMessages = async (req, res) => {
     const isBlockedByMe = !!blockByMe;
     const isBlockedByOther = !!blockByOther;
 
+    const partnerUser = await User.findById(selObjectId).select('firstName name profileImage isLoggedIn isOnline lastSeen').lean();
+
+    const isPartnerOnline = partnerUser ? checkIsOnline(partnerUser) : false;
+    const partnerLastSeen = partnerUser?.lastSeen ? new Date(partnerUser.lastSeen) : null;
+    const currentUserName = req.user?.firstName || req.user?.name || 'User';
+    const partnerName = partnerUser ? (partnerUser.firstName || partnerUser.name || 'User') : 'Unknown';
+
+    const uIdStr = selObjectId.toString();
+    const hasSocket = global.onlineUsers ? global.onlineUsers.has(uIdStr) : false;
+    const lastPing = global.userLastPing ? global.userLastPing.get(uIdStr) : null;
+    const hasPing = !!(lastPing && (Date.now() - lastPing < 35000));
+
+    console.log(`\n======================================================`);
+    console.log(`💬 [CHATTING SCREEN OPENED - HTTP]`);
+    console.log(`👤 Logged-in User (Viewer): "${currentUserName}" (ID: ${currentUserId})`);
+    console.log(`💬 Chat Partner (Target):   "${partnerName}" (ID: ${selObjectId})`);
+    console.log(`📱 DISPLAYED ON CHAT SCREEN FOR LOGGED-IN USER:`);
+    console.log(`   👉 Partner Status: ${isPartnerOnline ? 'Online 🟢' : `Offline 🔴 (Last Seen: ${partnerLastSeen ? partnerLastSeen.toLocaleTimeString() : 'N/A'})`}`);
+    console.log(`📋 Partner Presence Breakdown:`);
+    console.log(`   ├─ Cond 1 (Logged In in DB):  ${partnerUser?.isLoggedIn === true ? '✅ Yes' : '❌ No'} (isLoggedIn: ${partnerUser?.isLoggedIn}, isOnline: ${partnerUser?.isOnline})`);
+    console.log(`   ├─ Cond 2 (Active Socket):    ${hasSocket ? '✅ Yes' : '❌ No'}`);
+    console.log(`   └─ Cond 3 (Network Ping):     ${hasPing ? '✅ Yes' : '❌ No'}`);
+    console.log(`   => Conclusion: ${isPartnerOnline ? 'Partner is active on app with network -> displays "Online 🟢"' : 'Partner closed app/disconnected -> displays "Offline 🔴"'}`);
+    console.log(`======================================================\n`);
+
     return res.status(200).json({
       success: true,
       messages,
       isBlockedByMe,
       isBlockedByOther,
+      partner: partnerUser ? {
+        id: partnerUser._id.toString(),
+        name: partnerName,
+        image: partnerUser.profileImage || null,
+        isOnline: isPartnerOnline,
+        lastSeen: partnerUser.lastSeen || null,
+      } : null,
     });
   } catch (error) {
     console.error('Fetch messages with user error:', error);
