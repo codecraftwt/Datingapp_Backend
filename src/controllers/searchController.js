@@ -214,9 +214,19 @@ exports.advancedSearch = async (req, res) => {
       b.blockerId.toString() === req.user._id.toString() ? b.blockedId : b.blockerId
     );
 
-    // Build MongoDB Query (Exclude current user, blocked profiles, and hidden profiles)
+    // Get mutual matched user IDs to exclude from search (users who liked each other and are matched)
+    const Match = require('../models/Match');
+    const myLikes = await Match.find({ likerId: req.user._id });
+    const myLikedUserIds = myLikes.map((m) => m.likedId);
+
+    const likesMe = await Match.find({ likedId: req.user._id, likerId: { $in: myLikedUserIds } });
+    const matchedUserIds = likesMe.map((m) => m.likerId);
+
+    const excludedIds = [...blockedIds, ...matchedUserIds];
+
+    // Build MongoDB Query (Exclude current user, blocked profiles, matched profiles, and hidden profiles)
     const mongoQuery = {
-      _id: { $ne: req.user._id, $nin: blockedIds },
+      _id: { $ne: req.user._id, $nin: excludedIds },
       isProfileHidden: { $ne: true },
     };
 
@@ -445,23 +455,27 @@ exports.advancedSearch = async (req, res) => {
 
     // Format output users to exclude sensitive fields and hidden media items
     const formattedUsers = paginatedUsers.map((user) => {
-      const hiddenSet = new Set(Array.isArray(user.hiddenMedia) ? user.hiddenMedia : []);
+      const currentUserIdStr = req.user?._id ? req.user._id.toString() : '';
+      const perUserHidden = (user.hiddenProfileMedia || [])
+        .filter(item => item && item.hiddenForUserId && item.hiddenForUserId.toString() === currentUserIdStr)
+        .map(item => item.mediaUrl);
+      const globalHidden = (user.hiddenMedia || []);
+      const hiddenSet = new Set([...perUserHidden, ...globalHidden]);
 
-      const validImages = (Array.isArray(user.profileImages) ? user.profileImages : [])
-        .filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined');
+      const rawGalleryMedia = [
+        ...(user.profileImage ? [user.profileImage] : []),
+        ...(Array.isArray(user.profileImages) ? user.profileImages : []),
+        ...(Array.isArray(user.photos) ? user.photos : []),
+        ...(Array.isArray(user.videos) ? user.videos : []),
+        ...(Array.isArray(user.media) ? user.media : []),
+      ].filter((p) => p && typeof p === 'string' && p.trim().length > 0 && p !== 'null' && p !== 'undefined' && !hiddenSet.has(p));
 
-      const activeSet = new Set(
-        validImages.length > 0
-          ? validImages
-          : (user.profileImage && user.profileImage !== 'null' ? [user.profileImage] : [])
-      );
-
-      const publicProfileImages = Array.from(activeSet).filter((p) => !hiddenSet.has(p));
+      const publicProfileImages = Array.from(new Set(rawGalleryMedia));
       const publicPhotos = publicProfileImages.filter((p) => !isBackendVideoUrl(p));
       const publicVideos = publicProfileImages.filter((p) => isBackendVideoUrl(p));
       const publicMedia = publicProfileImages;
 
-      const safeProfileImage = (user.profileImage && activeSet.has(user.profileImage) && !hiddenSet.has(user.profileImage))
+      const safeProfileImage = (user.profileImage && typeof user.profileImage === 'string' && user.profileImage.trim().length > 0 && user.profileImage !== 'null' && user.profileImage !== 'undefined' && !hiddenSet.has(user.profileImage))
         ? user.profileImage
         : (publicProfileImages[0] || null);
 

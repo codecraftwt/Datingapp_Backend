@@ -456,35 +456,67 @@ exports.logoutAllDevices = async (req, res) => {
   try {
     await ensureDbConnection();
     const { email, password } = req.body || {};
-    if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required.' });
+    let userId = req.user?._id || req.user?.id;
+
+    // 1. Try extracting userId from Authorization Bearer token header if available
+    if (!userId) {
+      const authHeader = req.header('Authorization');
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.replace('Bearer ', '').trim();
+        if (token && token !== 'null' && token !== 'undefined') {
+          for (const secret of JWT_SECRETS) {
+            try {
+              const decoded = jwt.verify(token, secret);
+              if (decoded && (decoded.userId || decoded.id)) {
+                userId = decoded.userId || decoded.id;
+                break;
+              }
+            } catch (e) {}
+          }
+        }
+      }
     }
 
-    const cleanEmail = email.trim().toLowerCase();
-    const safeRegexEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const user = await User.findOne({
-      $or: [
-        { email: cleanEmail },
-        { email: { $regex: new RegExp(`^${safeRegexEmail}$`, 'i') } }
-      ]
-    });
+    // 2. Fallback to credentials check (email & password) if token not provided/valid
+    if (!userId && email && password) {
+      const cleanEmail = email.trim().toLowerCase();
+      const safeRegexEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const user = await User.findOne({
+        $or: [
+          { email: cleanEmail },
+          { email: { $regex: new RegExp(`^${safeRegexEmail}$`, 'i') } }
+        ]
+      });
 
-    if (!user || !user.password) {
-      return res.status(400).json({ message: 'Invalid email or password.' });
+      if (user && user.password) {
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (isMatch) {
+          userId = user._id;
+        }
+      }
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Invalid email or password.' });
+    if (!userId) {
+      return res.status(400).json({ message: 'Invalid credentials or user identity. Please provide a valid session token or login credentials.' });
     }
 
-    const userIdStr = user._id.toString();
+    const userIdStr = userId.toString();
 
-    await User.findByIdAndUpdate(user._id, {
-      $set: { currentToken: null, isLoggedIn: false, isOnline: false, fcmToken: null, lastSeen: new Date() }
-    });
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        $set: {
+          currentToken: null,
+          isLoggedIn: false,
+          isOnline: false,
+          fcmToken: null,
+          lastSeen: new Date(),
+        },
+      },
+      { new: true }
+    );
 
-    if (global.onlineUsers) {
+    if (global.onlineUsers && global.onlineUsers.delete) {
       global.onlineUsers.delete(userIdStr);
     }
 
@@ -492,7 +524,7 @@ exports.logoutAllDevices = async (req, res) => {
     if (io) {
       console.log(`[AUTH CONTROLLER] Emitting session_terminated event to user room: ${userIdStr}`);
       io.to(userIdStr).emit('session_terminated', {
-        message: 'Your session has been terminated because you logged out from all devices.',
+        message: 'Your session has been terminated because your account was logged out from all devices.',
         code: 'SESSION_TERMINATED',
         userId: userIdStr,
       });
@@ -500,7 +532,7 @@ exports.logoutAllDevices = async (req, res) => {
         const socketId = global.onlineUsers.get(userIdStr);
         if (socketId) {
           io.to(socketId).emit('session_terminated', {
-            message: 'Your session has been terminated because you logged out from all devices.',
+            message: 'Your session has been terminated because your account was logged out from all devices.',
             code: 'SESSION_TERMINATED',
             userId: userIdStr,
           });
@@ -514,13 +546,21 @@ exports.logoutAllDevices = async (req, res) => {
       });
     }
 
+    console.log(`[AUTH CONTROLLER] Successfully logged out user ${userIdStr} (${updatedUser?.email || 'user'}) from all devices.`);
+
     return res.status(200).json({
       success: true,
       message: 'Successfully logged out from all devices.',
+      user: updatedUser ? {
+        id: updatedUser._id,
+        email: updatedUser.email,
+        isLoggedIn: false,
+        currentToken: null,
+      } : null,
     });
   } catch (error) {
     console.error('logoutAllDevices error:', error);
-    return res.status(500).json({ message: 'Server error during logout from all devices.' });
+    return res.status(500).json({ message: 'Server error during logout from all devices.', error: error.message });
   }
 };
 
@@ -730,86 +770,7 @@ exports.deleteAccount = async (req, res) => {
   }
 };
 
-/**
- * Logout user from all devices (clears currentToken and isLoggedIn)
- */
-exports.logoutAllDevices = async (req, res) => {
-  try {
-    await ensureDbConnection();
-    const { email, password } = req.body || {};
-    let userId = req.user?._id || req.user?.id;
 
-    // 1. Try extracting userId from Authorization Bearer token header if available
-    if (!userId) {
-      const authHeader = req.header('Authorization');
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.replace('Bearer ', '').trim();
-        if (token && token !== 'null' && token !== 'undefined') {
-          for (const secret of JWT_SECRETS) {
-            try {
-              const decoded = jwt.verify(token, secret);
-              if (decoded && (decoded.userId || decoded.id)) {
-                userId = decoded.userId || decoded.id;
-                break;
-              }
-            } catch (e) {}
-          }
-        }
-      }
-    }
-
-    // 2. Fallback to credentials check (email & password) if token not provided/valid
-    if (!userId && email && password) {
-      const cleanEmail = email.trim().toLowerCase();
-      const safeRegexEmail = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const user = await User.findOne({
-        $or: [
-          { email: cleanEmail },
-          { email: { $regex: new RegExp(`^${safeRegexEmail}$`, 'i') } }
-        ]
-      });
-
-      if (user && user.password) {
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (isMatch) {
-          userId = user._id;
-        }
-      }
-    }
-
-    if (!userId) {
-      return res.status(400).json({ message: 'Invalid credentials or user identity. Please provide a valid session token or login credentials.' });
-    }
-
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      {
-        $set: {
-          currentToken: null,
-          isLoggedIn: false,
-          fcmToken: null,
-        },
-      },
-      { new: true }
-    );
-
-    console.log(`[AUTH CONTROLLER] Successfully logged out user ${userId} (${updatedUser?.email || 'user'}) from all devices.`);
-
-    return res.status(200).json({
-      success: true,
-      message: 'Successfully logged out from all devices.',
-      user: updatedUser ? {
-        id: updatedUser._id,
-        email: updatedUser.email,
-        isLoggedIn: false,
-        currentToken: null,
-      } : null,
-    });
-  } catch (error) {
-    console.error('Logout all devices error:', error);
-    return res.status(500).json({ message: 'Server error during logout from all devices.', error: error.message });
-  }
-};
 
 /**
  * Logout user from current session

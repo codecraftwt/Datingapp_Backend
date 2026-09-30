@@ -70,7 +70,7 @@ const handleMulterUpload = (req, res, next) => {
       if (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError') {
         return res.status(413).json({
           success: false,
-          message: 'Video file size exceeds maximum limit of 1GB. Please choose a video under 1GB.',
+          message: 'Video file size exceeds maximum limit. Please select or trim a video clip under 15 seconds (max 35MB).',
         });
       }
       return res.status(400).json({

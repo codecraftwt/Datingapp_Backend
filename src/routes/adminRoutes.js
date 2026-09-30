@@ -4,6 +4,8 @@ const adminController = require('../controllers/adminController');
 const featureController = require('../controllers/featureController');
 const planController = require('../controllers/planController');
 
+const contactController = require('../controllers/contactController');
+
 // 1. Admin Registration API Endpoint
 router.post('/register', adminController.registerAdmin);
 
@@ -18,6 +20,11 @@ router.get('/reports', adminController.getAllReports);
 
 // 5. Admin Update User Report Status API Endpoint
 router.put('/reports/:reportId', adminController.updateReportStatus);
+
+// --- Contact-Us User Reports Management APIs ---
+router.get('/contact-reports', contactController.getAllContactReports);
+router.put('/contact-reports/:id', contactController.updateContactReportStatus);
+router.delete('/contact-reports/:id', contactController.deleteContactReport);
 
 // 6. Admin Issue Warning to Reported User API Endpoint
 router.post('/warn-user', adminController.warnUser);

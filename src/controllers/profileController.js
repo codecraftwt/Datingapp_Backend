@@ -552,6 +552,16 @@ exports.getQuestionnaires = async (req, res) => {
     });
     const blockedIds = blocks.map(b => b.blockerId.toString() === req.user._id.toString() ? b.blockedId : b.blockerId);
 
+    // Get mutual matched user IDs to exclude from recommendations feed (users already matched & chatting)
+    const Match = require('../models/Match');
+    const myLikes = await Match.find({ likerId: req.user._id });
+    const myLikedUserIds = myLikes.map((m) => m.likedId);
+
+    const likesMe = await Match.find({ likedId: req.user._id, likerId: { $in: myLikedUserIds } });
+    const matchedUserIds = likesMe.map((m) => m.likerId);
+
+    const excludedCandidateIds = [...blockedIds, ...matchedUserIds];
+
     const userDistanceRangeKm = currentUser?.distanceRange || 50;
     const maxDistanceMeters = userDistanceRangeKm * 1000;
 
@@ -596,7 +606,7 @@ exports.getQuestionnaires = async (req, res) => {
 
     // Build Mongo Query Object based on Gender Preference
     const mongoQuery = {
-      _id: { $ne: req.user._id, $nin: blockedIds },
+      _id: { $ne: req.user._id, $nin: excludedCandidateIds },
       firstName: { $exists: true, $ne: null },
       isProfileHidden: { $ne: true }
     };
@@ -925,6 +935,14 @@ exports.getUserById = async (req, res) => {
 
     const currentUserIdStr = req.user?._id ? req.user._id.toString() : '';
 
+    // If target user has hidden their profile, prevent access for other users
+    if (targetUser.isProfileHidden && currentUserIdStr !== targetUser._id.toString()) {
+      return res.status(404).json({
+        message: 'This profile is currently hidden by the user.',
+        user: null,
+      });
+    }
+
     // If the target user has blocked the current user, deny access to full profile
     if (currentUserIdStr && mongoose.Types.ObjectId.isValid(currentUserIdStr)) {
       const Block = require('../models/Block');
@@ -956,10 +974,12 @@ exports.getUserById = async (req, res) => {
       distanceText = `${formatted} km away`;
     }
 
-    // Filter out media hidden by target user for logged-in viewer
-    const userHiddenMediaList = (targetUser.hiddenProfileMedia || [])
+    // Filter out media hidden by target user globally AND for logged-in viewer
+    const perUserHidden = (targetUser.hiddenProfileMedia || [])
       .filter(item => item && item.hiddenForUserId && item.hiddenForUserId.toString() === currentUserIdStr)
       .map(item => item.mediaUrl);
+    const globalHidden = (targetUser.hiddenMedia || []);
+    const userHiddenMediaList = Array.from(new Set([...perUserHidden, ...globalHidden]));
 
     const safeProfileImage = (targetUser.profileImage && typeof targetUser.profileImage === 'string' && targetUser.profileImage.trim().length > 0 && targetUser.profileImage !== 'null' && targetUser.profileImage !== 'undefined' && !userHiddenMediaList.includes(targetUser.profileImage))
       ? targetUser.profileImage
@@ -1052,7 +1072,8 @@ exports.getOnlineUsers = async (req, res) => {
     const activeOnlineIds = global.onlineUsers ? Array.from(global.onlineUsers.keys()) : [];
 
     const users = await User.find({
-      _id: { $in: activeOnlineIds, $ne: req.user._id }
+      _id: { $in: activeOnlineIds, $ne: req.user._id },
+      isProfileHidden: { $ne: true }
     });
     
     return res.status(200).json({

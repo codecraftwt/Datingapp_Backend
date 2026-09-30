@@ -67,7 +67,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ message: 'Invalid JSON format in request body.' });
   }
   if (err && err.status === 413) {
-    return res.status(413).json({ message: 'Uploaded video file size is too large (max 1GB allowed).' });
+    return res.status(413).json({ message: 'Uploaded video file size is too large. Please select or trim a video clip under 15 seconds (max 35MB).' });
   }
   next(err);
 });
@@ -148,6 +148,7 @@ const searchRoutes = require('./routes/searchRoutes');
 const questionnaireRoutes = require('./routes/questionnaireRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
+const contactRoutes = require('./routes/contactRoutes');
 
 // High-Visibility Global HTTP Request & Response Logger for All Subscription Endpoints
 app.use((req, res, next) => {
@@ -185,6 +186,33 @@ app.use('/api/search', searchRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/subscription', subscriptionRoutes);
+app.use('/api/contact', contactRoutes);
+app.use('/api/contact-us', contactRoutes);
+
+const contactController = require('./controllers/contactController');
+
+// Direct Global Contact-Us Form Submission Fallback Routes
+app.post([
+  '/api/contact/submit',
+  '/api/contact',
+  '/api/contact-us/submit',
+  '/api/contact-us',
+  '/api/auth/contact/submit',
+  '/api/auth/contact',
+  '/contact/submit',
+  '/contact',
+], (req, res, next) => {
+  return contactController.submitReport(req, res, next);
+});
+
+app.get([
+  '/api/contact/my-reports',
+  '/api/contact-us/my-reports',
+  '/api/auth/contact/my-reports',
+  '/contact/my-reports',
+], (req, res, next) => {
+  return contactController.getMySubmittedContactReports(req, res, next);
+});
 
 // Direct Global Presence Endpoint Fallback
 app.all(['/api/profile/presence', '/api/presence', '/api/user/presence', '/api/auth/presence', '/presence'], auth, (req, res, next) => {
