@@ -18,19 +18,10 @@ const JWT_SECRETS = [
 
 // Ensure MongoDB is connected before querying User model
 const ensureDbConnection = async () => {
-  if (mongoose.connection.readyState !== 1) {
-    console.log('[AUTH MIDDLEWARE] MongoDB disconnected or connecting. Auto-reconnecting...');
-    const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/Dating_App';
-    try {
-      await mongoose.connect(mongoURI, {
-        serverSelectionTimeoutMS: 10000,
-        maxPoolSize: 10,
-        socketTimeoutMS: 45000,
-      });
-      console.log('[AUTH MIDDLEWARE] MongoDB reconnected successfully.');
-    } catch (connErr) {
-      console.error('[AUTH MIDDLEWARE] MongoDB reconnection failed:', connErr.message);
-    }
+  if (mongoose.connection.readyState === 1) return;
+  for (let i = 0; i < 12; i++) {
+    if (mongoose.connection.readyState === 1) return;
+    await new Promise((r) => setTimeout(r, 250));
   }
 };
 

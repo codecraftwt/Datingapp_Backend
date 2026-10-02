@@ -54,6 +54,42 @@ const MessageSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    reactions: [
+      {
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        emoji: String,
+        createdAt: { type: Date, default: Date.now }
+      }
+    ],
+    replyTo: {
+      messageId: String,
+      senderId: String,
+      text: String,
+      senderName: String,
+      messageType: String,
+      mediaUrl: String,
+      fileName: String,
+    },
+    isPinned: {
+      type: Boolean,
+      default: false,
+    },
+    pinnedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    isStarred: {
+      type: Boolean,
+      default: false,
+    },
+    isDeletedForEveryone: {
+      type: Boolean,
+      default: false,
+    },
+    isEdited: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     collection: 'Messages', // Explicitly target the "Messages" collection

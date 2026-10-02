@@ -81,60 +81,95 @@ mongoose.set('bufferCommands', true);
 
 const mongooseOptions = {
   serverSelectionTimeoutMS: 10000,
-  maxPoolSize: 25,
-  minPoolSize: 5,
+  maxPoolSize: 10,
+  minPoolSize: 2,
+  maxIdleTimeMS: 30000,
   socketTimeoutMS: 45000,
   connectTimeoutMS: 10000,
   heartbeatFrequencyMS: 10000,
+  family: 4,
+  autoSelectFamily: false,
+};
+
+let isConnecting = false;
+const connectWithRetry = async () => {
+  if (mongoose.connection.readyState === 1 || isConnecting) return;
+  isConnecting = true;
+  console.log('[MongoDB] Connecting to database...');
+  try {
+    await mongoose.connect(mongoURI, mongooseOptions);
+    console.log('Successfully connected to MongoDB with permanent connection pool.');
+    isConnecting = false;
+    try {
+      await User.updateMany(
+        { 'currentLocation.location': { $exists: true }, 'currentLocation.location.coordinates': { $exists: false } },
+        { $unset: { currentLocation: 1 } }
+      );
+      await User.updateMany(
+        { 'permanentAddress.location': { $exists: true }, 'permanentAddress.location.coordinates': { $exists: false } },
+        { $unset: { 'permanentAddress.location': 1 } }
+      );
+      await User.updateMany(
+        { location: { $exists: true }, 'location.coordinates': { $exists: false } },
+        { $unset: { location: 1 } }
+      );
+      await User.updateMany(
+        { isMobileVerified: { $ne: true } },
+        { $set: { isEmailVerified: false, isVerified: false } }
+      );
+      const Report = require('./models/Report');
+      await Report.updateMany(
+        { $expr: { $eq: ['$reporterId', '$reportedId'] } },
+        { $set: { reporterId: null } }
+      );
+      // Reset stale isOnline flags upon server start/restart so users only show online with active socket
+      await User.updateMany({ isOnline: true }, { $set: { isOnline: false } });
+      console.log('Successfully sanitized existing database documents, verification flags, and report records.');
+    } catch (cleanErr) {
+      console.error('Geo cleanup error:', cleanErr);
+    }
+  } catch (err) {
+    isConnecting = false;
+    console.error('[MongoDB] Connection error:', err.message, '- Retrying in 4 seconds...');
+    setTimeout(connectWithRetry, 4000);
+  }
 };
 
 mongoose.connection.on('disconnected', () => {
-  console.warn('[MongoDB] Connection lost. Reconnecting immediately...');
-  mongoose.connect(mongoURI, mongooseOptions).catch((err) => {
-    console.error('[MongoDB] Reconnection attempt error:', err.message);
-  });
+  console.warn('[MongoDB] Connection lost. Driver is auto-reconnecting or retrying in background...');
+  setTimeout(connectWithRetry, 3000);
 });
 
 mongoose.connection.on('error', (err) => {
   console.error('[MongoDB] Socket error:', err.message);
 });
 
-if (mongoose.connection.readyState === 0) {
-  mongoose
-    .connect(mongoURI, mongooseOptions)
-    .then(async () => {
-      console.log('Successfully connected to MongoDB with permanent connection pool.');
-      try {
-        await User.updateMany(
-          { 'currentLocation.location': { $exists: true }, 'currentLocation.location.coordinates': { $exists: false } },
-          { $unset: { currentLocation: 1 } }
-        );
-        await User.updateMany(
-          { 'permanentAddress.location': { $exists: true }, 'permanentAddress.location.coordinates': { $exists: false } },
-          { $unset: { 'permanentAddress.location': 1 } }
-        );
-        await User.updateMany(
-          { location: { $exists: true }, 'location.coordinates': { $exists: false } },
-          { $unset: { location: 1 } }
-        );
-        await User.updateMany(
-          { isMobileVerified: { $ne: true } },
-          { $set: { isEmailVerified: false, isVerified: false } }
-        );
-        const Report = require('./models/Report');
-        await Report.updateMany(
-          { $expr: { $eq: ['$reporterId', '$reportedId'] } },
-          { $set: { reporterId: null } }
-        );
-        // Reset stale isOnline flags upon server start/restart so users only show online with active socket
-        await User.updateMany({ isOnline: true }, { $set: { isOnline: false } });
-        console.log('Successfully sanitized existing database documents, verification flags, and report records.');
-      } catch (cleanErr) {
-        console.error('Geo cleanup error:', cleanErr);
-      }
-    })
-    .catch((err) => console.error('MongoDB connection error:', err));
-}
+// Graceful connection cleanup on server/nodemon restart
+const closeDbConnection = async () => {
+  try {
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.connection.close();
+      console.log('[MongoDB] Connection pool closed cleanly.');
+    }
+  } catch (e) {}
+};
+
+process.once('SIGINT', async () => {
+  await closeDbConnection();
+  process.exit(0);
+});
+
+process.once('SIGTERM', async () => {
+  await closeDbConnection();
+  process.exit(0);
+});
+
+process.once('SIGUSR2', async () => {
+  await closeDbConnection();
+  process.kill(process.pid, 'SIGUSR2');
+});
+
+connectWithRetry();
 
 // Routes
 const auth = require('./middleware/auth');
@@ -485,7 +520,7 @@ io.on('connection', (socket) => {
   socket.on('send_message', async (data, callback) => {
     try {
       const payloadData = typeof data === 'object' ? data : {};
-      const { senderId, receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId } = payloadData;
+      const { senderId, receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId, replyTo } = payloadData;
       const ack = typeof callback === 'function' ? callback : (typeof data === 'function' ? data : null);
 
       if (!senderId || !receiverId) {
@@ -519,6 +554,21 @@ io.on('connection', (socket) => {
       const msgId = new mongoose.Types.ObjectId();
       const createdAt = new Date();
 
+      let parsedReplyTo = replyTo;
+      if (typeof replyTo === 'string') {
+        try {
+          parsedReplyTo = JSON.parse(replyTo);
+        } catch (_) {
+          parsedReplyTo = null;
+        }
+      }
+      if (parsedReplyTo && typeof parsedReplyTo === 'object') {
+        const hasContent = parsedReplyTo.text || parsedReplyTo.mediaUrl || parsedReplyTo.fileName || parsedReplyTo.stickerId;
+        if (!hasContent) parsedReplyTo = null;
+      } else {
+        parsedReplyTo = null;
+      }
+
       const msgData = {
         _id: msgId,
         senderId: sIdStr,
@@ -531,7 +581,9 @@ io.on('connection', (socket) => {
         stickerId: stickerId || null,
         status: initialStatus,
         createdAt: createdAt,
-        tempId: tempId || null
+        tempId: tempId || null,
+        replyTo: parsedReplyTo || null,
+        reactions: [],
       };
 
       // ⚡ 0ms INSTANT SOCKET EMISSION (No database blocking!)
@@ -570,6 +622,7 @@ io.on('connection', (socket) => {
         status: initialStatus,
         createdAt: createdAt,
         tempId: tempId || null,
+        replyTo: parsedReplyTo || null,
       });
       newMessage.save().catch(err => console.error('Error saving message in background:', err));
 
@@ -614,6 +667,252 @@ io.on('connection', (socket) => {
       if (typeof callback === 'function') {
         callback({ status: 'error', error: err.message });
       }
+    }
+  });
+
+  // Handle editing message text in real time
+  socket.on('edit_message', async ({ messageId, receiverId, text }) => {
+    try {
+      if (!messageId || !text || !text.trim()) return;
+      const msg = await Message.findById(messageId);
+      if (msg) {
+        msg.text = text.trim();
+        msg.isEdited = true;
+        await msg.save();
+
+        const rIdStr = (receiverId || msg.receiverId)?.toString();
+        const sIdStr = msg.senderId?.toString();
+        const editPayload = {
+          messageId: msg._id.toString(),
+          senderId: sIdStr,
+          receiverId: rIdStr,
+          text: msg.text,
+          isEdited: true,
+        };
+
+        if (rIdStr) {
+          io.to(rIdStr).emit('message_edited', editPayload);
+          const receiverSocketId = onlineUsers.get(rIdStr);
+          if (receiverSocketId) io.to(receiverSocketId).emit('message_edited', editPayload);
+        }
+        if (sIdStr) {
+          io.to(sIdStr).emit('message_edited', editPayload);
+        }
+      }
+    } catch (err) {
+      console.error('Error handling edit_message socket event:', err);
+    }
+  });
+
+  // Handle message reactions (WhatsApp style emoji reactions)
+  socket.on('react_message', async ({ messageId, senderId, receiverId, emoji, action }) => {
+    try {
+      if (!messageId || !senderId) return;
+      const sIdStr = senderId.toString();
+      const rIdStr = receiverId ? receiverId.toString() : '';
+
+      let msg = null;
+      if (mongoose.Types.ObjectId.isValid(messageId)) {
+        msg = await Message.findById(messageId);
+      }
+      if (!msg) {
+        msg = await Message.findOne({ tempId: messageId });
+      }
+
+      if (!msg) {
+        console.warn(`[react_message] Message ${messageId} not found in DB`);
+        return;
+      }
+
+      if (!Array.isArray(msg.reactions)) {
+        msg.reactions = [];
+      }
+
+      const existingIdx = msg.reactions.findIndex(
+        (r) => r.userId && r.userId.toString() === sIdStr
+      );
+      const uObjId = mongoose.Types.ObjectId.isValid(sIdStr) ? new mongoose.Types.ObjectId(sIdStr) : senderId;
+
+      if (action === 'remove') {
+        if (existingIdx > -1) {
+          msg.reactions.splice(existingIdx, 1);
+        }
+      } else if (action === 'set' || action === 'add') {
+        if (existingIdx > -1) {
+          msg.reactions[existingIdx].emoji = emoji;
+        } else {
+          msg.reactions.push({ userId: uObjId, emoji });
+        }
+      } else {
+        // Default toggle behavior
+        if (existingIdx > -1) {
+          if (msg.reactions[existingIdx].emoji === emoji) {
+            msg.reactions.splice(existingIdx, 1);
+          } else {
+            msg.reactions[existingIdx].emoji = emoji;
+          }
+        } else {
+          msg.reactions.push({ userId: uObjId, emoji });
+        }
+      }
+
+      await msg.save();
+      const updatedReactions = msg.reactions;
+
+      const payload = {
+        messageId: msg._id.toString(),
+        tempId: msg.tempId || messageId,
+        reactions: updatedReactions,
+        senderId: sIdStr,
+        receiverId: rIdStr,
+        emoji,
+      };
+      io.to(sIdStr).emit('message_reaction_updated', payload);
+      if (rIdStr) {
+        io.to(rIdStr).emit('message_reaction_updated', payload);
+        const rSocketId = onlineUsers.get(rIdStr);
+        if (rSocketId) io.to(rSocketId).emit('message_reaction_updated', payload);
+      }
+    } catch (err) {
+      console.error('Error handling react_message event:', err);
+    }
+  });
+
+  // Handle message pinning
+  socket.on('pin_message', async ({ messageId, senderId, receiverId, isPinned }) => {
+    try {
+      if (!messageId || !senderId) return;
+      const sIdStr = senderId.toString();
+      const rIdStr = receiverId ? receiverId.toString() : '';
+
+      let msg = null;
+      if (mongoose.Types.ObjectId.isValid(messageId)) {
+        msg = await Message.findById(messageId);
+      }
+      if (!msg) {
+        msg = await Message.findOne({ tempId: messageId });
+      }
+
+      if (!msg) {
+        console.warn(`[pin_message] Message ${messageId} not found in DB`);
+        return;
+      }
+
+      const uObjId = mongoose.Types.ObjectId.isValid(sIdStr) ? new mongoose.Types.ObjectId(sIdStr) : null;
+      msg.isPinned = !!isPinned;
+      msg.pinnedBy = isPinned ? uObjId : null;
+      await msg.save();
+
+      if (isPinned) {
+        // WhatsApp rule: unpin previously pinned messages in this conversation
+        await Message.updateMany(
+          {
+            $or: [
+              { senderId: msg.senderId, receiverId: msg.receiverId },
+              { senderId: msg.receiverId, receiverId: msg.senderId },
+            ],
+            _id: { $ne: msg._id },
+            isPinned: true,
+          },
+          { isPinned: false, pinnedBy: null }
+        );
+      }
+
+      const payload = {
+        messageId: msg._id.toString(),
+        tempId: msg.tempId || messageId,
+        isPinned: !!isPinned,
+        pinnedBy: sIdStr,
+        senderId: sIdStr,
+        receiverId: rIdStr,
+        text: msg.text || '',
+      };
+      io.to(sIdStr).emit('message_pinned_updated', payload);
+      if (rIdStr && rIdStr !== sIdStr) {
+        io.to(rIdStr).emit('message_pinned_updated', payload);
+        const rSocketId = onlineUsers.get(rIdStr);
+        if (rSocketId) io.to(rSocketId).emit('message_pinned_updated', payload);
+      }
+    } catch (err) {
+      console.error('Error handling pin_message event:', err);
+    }
+  });
+
+  // Handle message starring/unstarring
+  socket.on('star_message', async ({ messageId, senderId, receiverId, isStarred }) => {
+    try {
+      if (!messageId || !senderId) return;
+      const sIdStr = senderId.toString();
+      const rIdStr = receiverId ? receiverId.toString() : '';
+
+      let msg = null;
+      if (mongoose.Types.ObjectId.isValid(messageId)) {
+        msg = await Message.findById(messageId);
+      }
+      if (!msg) {
+        msg = await Message.findOne({ tempId: messageId });
+      }
+
+      if (!msg) {
+        console.warn(`[star_message] Message ${messageId} not found in DB`);
+        return;
+      }
+
+      msg.isStarred = !!isStarred;
+      await msg.save();
+
+      const payload = {
+        messageId: msg._id.toString(),
+        tempId: msg.tempId || messageId,
+        isStarred: !!isStarred,
+        senderId: sIdStr,
+        receiverId: rIdStr,
+      };
+      io.to(sIdStr).emit('message_star_updated', payload);
+      if (rIdStr && rIdStr !== sIdStr) {
+        io.to(rIdStr).emit('message_star_updated', payload);
+        const rSocketId = onlineUsers.get(rIdStr);
+        if (rSocketId) io.to(rSocketId).emit('message_star_updated', payload);
+      }
+    } catch (err) {
+      console.error('Error handling star_message event:', err);
+    }
+  });
+
+  // Handle message deletion (Delete for me vs Delete for everyone)
+  socket.on('delete_message', async ({ messageId, senderId, receiverId, deleteType }) => {
+    try {
+      if (!messageId || !senderId) return;
+      const sIdStr = senderId.toString();
+      const rIdStr = receiverId ? receiverId.toString() : '';
+
+      const msg = await Message.findById(messageId);
+      if (msg) {
+        const isSender = msg.senderId.toString() === sIdStr;
+        if (deleteType === 'everyone' && isSender) {
+          msg.isDeletedForEveryone = true;
+          msg.text = 'This message was deleted';
+          msg.mediaUrl = null;
+          await msg.save();
+
+          const payload = { messageId, deleteType: 'everyone', text: 'This message was deleted', senderId: sIdStr, receiverId: rIdStr };
+          io.to(sIdStr).emit('message_deleted', payload);
+          if (rIdStr) {
+            io.to(rIdStr).emit('message_deleted', payload);
+            const rSocketId = onlineUsers.get(rIdStr);
+            if (rSocketId) io.to(rSocketId).emit('message_deleted', payload);
+          }
+        } else {
+          if (isSender) msg.deletedBySender = true;
+          else msg.deletedByReceiver = true;
+          await msg.save();
+
+          const payload = { messageId, deleteType: 'me', senderId: sIdStr, receiverId: rIdStr };
+          socket.emit('message_deleted', payload);
+        }
+      }
+    } catch (err) {
+      console.error('Error handling delete_message event:', err);
     }
   });
 

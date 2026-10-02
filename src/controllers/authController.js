@@ -26,29 +26,14 @@ const JWT_SECRETS = [
 const ensureDbConnection = async () => {
   if (mongoose.connection.readyState === 1) return;
 
-  // If connection is in progress (readyState === 2), wait for it to complete
-  if (mongoose.connection.readyState === 2) {
-    for (let i = 0; i < 20; i++) {
-      if (mongoose.connection.readyState === 1) return;
-      await new Promise((r) => setTimeout(r, 250));
-    }
+  // If connection is in progress or reconnecting (readyState 2 or 0), wait for it to complete
+  for (let i = 0; i < 20; i++) {
+    if (mongoose.connection.readyState === 1) return;
+    await new Promise((r) => setTimeout(r, 250));
   }
 
   if (mongoose.connection.readyState !== 1) {
-    console.log('[AUTH CONTROLLER] MongoDB disconnected (readyState=' + mongoose.connection.readyState + '). Reconnecting...');
-    const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/Dating_App';
-    try {
-      await mongoose.connect(mongoURI, {
-        serverSelectionTimeoutMS: 8000,
-        maxPoolSize: 25,
-        minPoolSize: 5,
-        socketTimeoutMS: 45000,
-      });
-      console.log('[AUTH CONTROLLER] MongoDB connected successfully.');
-    } catch (connErr) {
-      console.error('[AUTH CONTROLLER] MongoDB connection failed:', connErr.message);
-      throw new Error('Database connection failed. Please check your network connection or MongoDB status.');
-    }
+    console.warn('[AUTH CONTROLLER] MongoDB connection not ready (readyState=' + mongoose.connection.readyState + '). Operations will buffer.');
   }
 };
 

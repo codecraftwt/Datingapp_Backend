@@ -484,7 +484,7 @@ exports.uploadChatMedia = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const senderId = req.user._id;
-    const { receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId } = req.body;
+    const { receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId, replyTo } = req.body;
 
     if (!receiverId) {
       return res.status(400).json({ message: 'Receiver ID is required.' });
@@ -506,27 +506,28 @@ exports.sendMessage = async (req, res) => {
       return res.status(403).json({ message: 'You cannot send messages to this user because you are blocked.' });
     }
 
-    // Deduplicate: Check if this message was already sent/saved via socket or earlier REST call
-    const dedupeQuery = [];
-    if (tempId) dedupeQuery.push({ tempId: tempId });
-    if (text) {
-      dedupeQuery.push({
-        senderId,
-        receiverId,
-        text: text.trim(),
-        createdAt: { $gte: new Date(Date.now() - 10000) }
-      });
-    }
-
-    if (dedupeQuery.length > 0) {
-      const existingMessage = await Message.findOne({ $or: dedupeQuery });
+    // Deduplicate only by unique tempId if provided (never by text alone)
+    if (tempId) {
+      const existingMessage = await Message.findOne({ tempId: tempId });
       if (existingMessage) {
-        console.log(`[REST sendMessage] Deduplicated duplicate message call for tempId: ${tempId || existingMessage._id}`);
+        console.log(`[REST sendMessage] Deduplicated duplicate message call for tempId: ${tempId}`);
         return res.status(200).json({
           message: 'Message sent (deduplicated)',
           data: existingMessage,
         });
       }
+    }
+
+    let parsedReplyTo = replyTo;
+    if (typeof replyTo === 'string') {
+      try {
+        parsedReplyTo = JSON.parse(replyTo);
+      } catch (e) {
+        parsedReplyTo = null;
+      }
+    }
+    if (parsedReplyTo && (!parsedReplyTo.text && !parsedReplyTo.mediaUrl && !parsedReplyTo.fileName && !parsedReplyTo.stickerId)) {
+      parsedReplyTo = null;
     }
 
     const onlineUsers = global.onlineUsers || new Map();
@@ -544,6 +545,8 @@ exports.sendMessage = async (req, res) => {
       fileSize,
       stickerId,
       status: initialStatus,
+      tempId: tempId || null,
+      replyTo: parsedReplyTo || null,
     });
     await newMessage.save();
 
@@ -560,6 +563,7 @@ exports.sendMessage = async (req, res) => {
       status: newMessage.status,
       createdAt: newMessage.createdAt,
       tempId: tempId || null,
+      replyTo: newMessage.replyTo || replyTo || null,
     };
 
     if (io) {
@@ -621,3 +625,278 @@ exports.sendMessage = async (req, res) => {
     return res.status(500).json({ message: 'Server error while sending message.' });
   }
 };
+
+/**
+ * Edit an existing sent message text
+ */
+exports.editMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { text } = req.body;
+    const currentUserId = req.user._id.toString();
+
+    if (!messageId || !text || !text.trim()) {
+      return res.status(400).json({ message: 'Message ID and non-empty text are required.' });
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found.' });
+    }
+
+    if (message.senderId.toString() !== currentUserId) {
+      return res.status(403).json({ message: 'You can only edit your own messages.' });
+    }
+
+    message.text = text.trim();
+    message.isEdited = true;
+    await message.save();
+
+    const io = req.app.get('io');
+    if (io) {
+      const editPayload = {
+        messageId: message._id.toString(),
+        senderId: currentUserId,
+        receiverId: message.receiverId.toString(),
+        text: message.text,
+        isEdited: true,
+      };
+      io.to(message.receiverId.toString()).emit('message_edited', editPayload);
+      const onlineUsers = global.onlineUsers || new Map();
+      const receiverSocketId = onlineUsers.get(message.receiverId.toString());
+      if (receiverSocketId) io.to(receiverSocketId).emit('message_edited', editPayload);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Message edited successfully',
+      data: message,
+    });
+  } catch (error) {
+    console.error('Edit message error:', error);
+    return res.status(500).json({ message: 'Server error while editing message.' });
+  }
+};
+
+/**
+ * React to a message with an emoji (WhatsApp style emoji reaction with MongoDB persistence)
+ */
+exports.reactToMessage = async (req, res) => {
+  try {
+    const currentUserId = req.user?._id;
+    const { messageId } = req.params;
+    const { emoji, receiverId, action } = req.body;
+
+    if (!emoji && action !== 'remove') {
+      return res.status(400).json({ message: 'Emoji is required.' });
+    }
+    if (!messageId) {
+      return res.status(400).json({ message: 'Message ID is required.' });
+    }
+
+    let msg = null;
+    if (mongoose.Types.ObjectId.isValid(messageId)) {
+      msg = await Message.findById(messageId);
+    }
+    if (!msg) {
+      msg = await Message.findOne({ tempId: messageId });
+    }
+
+    if (!msg) {
+      return res.status(404).json({ message: 'Message not found.' });
+    }
+
+    const uIdStr = currentUserId.toString();
+    if (!Array.isArray(msg.reactions)) {
+      msg.reactions = [];
+    }
+
+    const existingIdx = msg.reactions.findIndex(
+      (r) => r.userId && r.userId.toString() === uIdStr
+    );
+
+    if (action === 'remove') {
+      if (existingIdx > -1) {
+        msg.reactions.splice(existingIdx, 1);
+      }
+    } else if (action === 'set' || action === 'add') {
+      if (existingIdx > -1) {
+        msg.reactions[existingIdx].emoji = emoji;
+      } else {
+        msg.reactions.push({ userId: currentUserId, emoji });
+      }
+    } else {
+      // Default toggle behavior
+      if (existingIdx > -1) {
+        if (msg.reactions[existingIdx].emoji === emoji) {
+          msg.reactions.splice(existingIdx, 1);
+        } else {
+          msg.reactions[existingIdx].emoji = emoji;
+        }
+      } else {
+        msg.reactions.push({ userId: currentUserId, emoji });
+      }
+    }
+
+    await msg.save();
+
+    const targetReceiverId = (receiverId || (msg.senderId.toString() === uIdStr ? msg.receiverId.toString() : msg.senderId.toString()))?.toString();
+    const payload = {
+      messageId: msg._id.toString(),
+      tempId: msg.tempId || messageId,
+      reactions: msg.reactions,
+      senderId: uIdStr,
+      receiverId: targetReceiverId,
+      emoji,
+    };
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(uIdStr).emit('message_reaction_updated', payload);
+      if (targetReceiverId) {
+        io.to(targetReceiverId).emit('message_reaction_updated', payload);
+        const onlineUsers = global.onlineUsers || new Map();
+        const rSocketId = onlineUsers.get(targetReceiverId);
+        if (rSocketId) io.to(rSocketId).emit('message_reaction_updated', payload);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Reaction updated successfully',
+      reactions: msg.reactions,
+      messageId: msg._id.toString(),
+      tempId: msg.tempId || messageId,
+    });
+  } catch (error) {
+    console.error('reactToMessage error:', error);
+    return res.status(500).json({ message: 'Server error while reacting to message.' });
+  }
+};
+
+/**
+ * Pin or unpin a message
+ */
+exports.pinMessage = async (req, res) => {
+  try {
+    const currentUserId = req.user?._id;
+    const { messageId } = req.params;
+    const { isPinned, receiverId } = req.body;
+
+    let msg = null;
+    if (mongoose.Types.ObjectId.isValid(messageId)) {
+      msg = await Message.findById(messageId);
+    }
+    if (!msg) {
+      msg = await Message.findOne({ tempId: messageId });
+    }
+
+    if (!msg) {
+      return res.status(404).json({ message: 'Message not found.' });
+    }
+
+    msg.isPinned = !!isPinned;
+    msg.pinnedBy = isPinned ? currentUserId : null;
+    await msg.save();
+
+    if (isPinned) {
+      // WhatsApp single-pin rule: unpin other messages in this conversation
+      await Message.updateMany(
+        {
+          $or: [
+            { senderId: msg.senderId, receiverId: msg.receiverId },
+            { senderId: msg.receiverId, receiverId: msg.senderId },
+          ],
+          _id: { $ne: msg._id },
+          isPinned: true,
+        },
+        { isPinned: false, pinnedBy: null }
+      );
+    }
+
+    const uIdStr = currentUserId.toString();
+    const targetReceiverId = (receiverId || (msg.senderId.toString() === uIdStr ? msg.receiverId.toString() : msg.senderId.toString()))?.toString();
+    const payload = {
+      messageId: msg._id.toString(),
+      tempId: msg.tempId || messageId,
+      isPinned: msg.isPinned,
+      senderId: uIdStr,
+      receiverId: targetReceiverId,
+    };
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(uIdStr).emit('message_pinned_updated', payload);
+      if (targetReceiverId) {
+        io.to(targetReceiverId).emit('message_pinned_updated', payload);
+        const onlineUsers = global.onlineUsers || new Map();
+        const rSocketId = onlineUsers.get(targetReceiverId);
+        if (rSocketId) io.to(rSocketId).emit('message_pinned_updated', payload);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      isPinned: msg.isPinned,
+      messageId: msg._id.toString(),
+    });
+  } catch (error) {
+    console.error('pinMessage error:', error);
+    return res.status(500).json({ message: 'Server error while pinning message.' });
+  }
+};
+
+exports.starMessage = async (req, res) => {
+  try {
+    const currentUserId = req.user?._id;
+    const { messageId } = req.params;
+    const { isStarred, receiverId } = req.body;
+
+    let msg = null;
+    if (mongoose.Types.ObjectId.isValid(messageId)) {
+      msg = await Message.findById(messageId);
+    }
+    if (!msg) {
+      msg = await Message.findOne({ tempId: messageId });
+    }
+
+    if (!msg) {
+      return res.status(404).json({ message: 'Message not found.' });
+    }
+
+    msg.isStarred = !!isStarred;
+    await msg.save();
+
+    const uIdStr = currentUserId.toString();
+    const targetReceiverId = (receiverId || (msg.senderId.toString() === uIdStr ? msg.receiverId.toString() : msg.senderId.toString()))?.toString();
+    const payload = {
+      messageId: msg._id.toString(),
+      tempId: msg.tempId || messageId,
+      isStarred: msg.isStarred,
+      senderId: uIdStr,
+      receiverId: targetReceiverId,
+    };
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(uIdStr).emit('message_star_updated', payload);
+      if (targetReceiverId) {
+        io.to(targetReceiverId).emit('message_star_updated', payload);
+        const onlineUsers = global.onlineUsers || new Map();
+        const rSocketId = onlineUsers.get(targetReceiverId);
+        if (rSocketId) io.to(rSocketId).emit('message_star_updated', payload);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      isStarred: msg.isStarred,
+      messageId: msg._id.toString(),
+    });
+  } catch (error) {
+    console.error('starMessage error:', error);
+    return res.status(500).json({ message: 'Server error while starring message.' });
+  }
+};
+
+
