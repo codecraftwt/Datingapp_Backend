@@ -520,7 +520,7 @@ io.on('connection', (socket) => {
   socket.on('send_message', async (data, callback) => {
     try {
       const payloadData = typeof data === 'object' ? data : {};
-      const { senderId, receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId, replyTo } = payloadData;
+      const { senderId, receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId, replyTo, isForwarded } = payloadData;
       const ack = typeof callback === 'function' ? callback : (typeof data === 'function' ? data : null);
 
       if (!senderId || !receiverId) {
@@ -584,6 +584,7 @@ io.on('connection', (socket) => {
         tempId: tempId || null,
         replyTo: parsedReplyTo || null,
         reactions: [],
+        isForwarded: Boolean(isForwarded),
       };
 
       // ⚡ 0ms INSTANT SOCKET EMISSION (No database blocking!)
@@ -623,6 +624,7 @@ io.on('connection', (socket) => {
         createdAt: createdAt,
         tempId: tempId || null,
         replyTo: parsedReplyTo || null,
+        isForwarded: Boolean(isForwarded),
       });
       newMessage.save().catch(err => console.error('Error saving message in background:', err));
 
@@ -886,20 +888,33 @@ io.on('connection', (socket) => {
       const sIdStr = senderId.toString();
       const rIdStr = receiverId ? receiverId.toString() : '';
 
-      const msg = await Message.findById(messageId);
+      const isValidOid = mongoose.Types.ObjectId.isValid(messageId);
+      const msg = isValidOid ? await Message.findById(messageId) : await Message.findOne({ tempId: messageId });
       if (msg) {
         const isSender = msg.senderId.toString() === sIdStr;
         if (deleteType === 'everyone' && isSender) {
           msg.isDeletedForEveryone = true;
           msg.text = 'This message was deleted';
           msg.mediaUrl = null;
+          msg.fileName = null;
+          msg.fileSize = null;
+          msg.reactions = [];
           await msg.save();
 
-          const payload = { messageId, deleteType: 'everyone', text: 'This message was deleted', senderId: sIdStr, receiverId: rIdStr };
+          const targetReceiverId = msg.receiverId ? msg.receiverId.toString() : rIdStr;
+          const payload = {
+            messageId: msg._id.toString(),
+            tempId: msg.tempId || null,
+            deleteType: 'everyone',
+            deletedForEveryone: true,
+            text: 'This message was deleted',
+            senderId: sIdStr,
+            receiverId: targetReceiverId,
+          };
           io.to(sIdStr).emit('message_deleted', payload);
-          if (rIdStr) {
-            io.to(rIdStr).emit('message_deleted', payload);
-            const rSocketId = onlineUsers.get(rIdStr);
+          if (targetReceiverId) {
+            io.to(targetReceiverId).emit('message_deleted', payload);
+            const rSocketId = onlineUsers.get(targetReceiverId);
             if (rSocketId) io.to(rSocketId).emit('message_deleted', payload);
           }
         } else {
@@ -907,7 +922,14 @@ io.on('connection', (socket) => {
           else msg.deletedByReceiver = true;
           await msg.save();
 
-          const payload = { messageId, deleteType: 'me', senderId: sIdStr, receiverId: rIdStr };
+          const payload = {
+            messageId: msg._id.toString(),
+            tempId: msg.tempId || null,
+            deleteType: 'me',
+            deletedForEveryone: false,
+            senderId: sIdStr,
+            receiverId: rIdStr,
+          };
           socket.emit('message_deleted', payload);
         }
       }

@@ -107,7 +107,7 @@ exports.getChatMessages = async (req, res) => {
     Notification.updateMany(
       { recipient: currentUserId, sender: selObjectId, type: 'chat', isRead: false },
       { isRead: true }
-    ).catch(() => {});
+    ).catch(() => { });
 
     Message.updateMany(
       { senderId: selObjectId, receiverId: currentUserId, status: { $ne: 'seen' } },
@@ -127,7 +127,7 @@ exports.getChatMessages = async (req, res) => {
           if (senderSocketId) io.to(senderSocketId).emit('messages_seen', payload);
         }
       }
-    }).catch(() => {});
+    }).catch(() => { });
 
     const messages = await Message.find({
       $or: [
@@ -277,16 +277,32 @@ exports.deleteMessage = async (req, res) => {
       }
 
       const receiverId = message.receiverId.toString();
-      await Message.findByIdAndDelete(messageId);
+      message.isDeletedForEveryone = true;
+      message.text = 'This message was deleted';
+      message.mediaUrl = null;
+      message.fileName = null;
+      message.fileSize = null;
+      message.reactions = [];
+      await message.save();
 
-      // Notify both sender and receiver to remove the message from their UI
+      // Notify both sender and receiver to update the message in their UI
       if (io) {
-        const payload = { messageId: messageId.toString(), senderId: currentUserId.toString(), receiverId, deletedForEveryone: true };
+        const payload = {
+          messageId: messageId.toString(),
+          senderId: currentUserId.toString(),
+          receiverId,
+          deleteType: 'everyone',
+          deletedForEveryone: true,
+          text: 'This message was deleted',
+        };
         io.to(currentUserId.toString()).emit('message_deleted', payload);
         io.to(receiverId).emit('message_deleted', payload);
+        const onlineUsers = global.onlineUsers || new Map();
+        const rSocketId = onlineUsers.get(receiverId);
+        if (rSocketId) io.to(rSocketId).emit('message_deleted', payload);
       }
 
-      return res.status(200).json({ message: 'Message deleted for everyone.', messageId, deletedForEveryone: true });
+      return res.status(200).json({ message: 'Message deleted for everyone.', messageId, deletedForEveryone: true, isDeletedForEveryone: true });
     } else {
       // Delete for me only — mark the appropriate flag
       if (isSender) {
@@ -444,7 +460,7 @@ exports.uploadChatMedia = async (req, res) => {
         console.log('[uploadChatMedia] Using local /uploads/ fallback URL:', mediaUrl);
       } else {
         if (fs.existsSync(file.path)) {
-          try { fs.unlinkSync(file.path); } catch (e) {}
+          try { fs.unlinkSync(file.path); } catch (e) { }
         }
       }
     } else if (file && file.buffer) {
@@ -484,7 +500,7 @@ exports.uploadChatMedia = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const senderId = req.user._id;
-    const { receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId, replyTo } = req.body;
+    const { receiverId, text, messageType, mediaUrl, fileName, fileSize, stickerId, tempId, replyTo, isForwarded } = req.body;
 
     if (!receiverId) {
       return res.status(400).json({ message: 'Receiver ID is required.' });
@@ -547,6 +563,7 @@ exports.sendMessage = async (req, res) => {
       status: initialStatus,
       tempId: tempId || null,
       replyTo: parsedReplyTo || null,
+      isForwarded: Boolean(isForwarded),
     });
     await newMessage.save();
 
@@ -564,6 +581,7 @@ exports.sendMessage = async (req, res) => {
       createdAt: newMessage.createdAt,
       tempId: tempId || null,
       replyTo: newMessage.replyTo || replyTo || null,
+      isForwarded: Boolean(newMessage.isForwarded),
     };
 
     if (io) {
@@ -586,23 +604,23 @@ exports.sendMessage = async (req, res) => {
     const senderUser = await User.findById(senderId).select('firstName name');
     const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
 
-    let notificationText = '💬 Sent a message';
-    let notificationTitle = `💬 ${senderName}`;
+    let notificationText = ' Sent a message';
+    let notificationTitle = ` ${senderName}`;
 
     if (messageType === 'voice') {
-      notificationTitle = `🎤 Voice Message from ${senderName}`;
-      notificationText = '🎤 Sent a voice note / audio message';
+      notificationTitle = ` Voice Message from ${senderName}`;
+      notificationText = ' Sent a voice note / audio message';
     } else if (messageType === 'call') {
-      notificationTitle = `📞 Voice Call from ${senderName}`;
-      notificationText = text || '📞 Voice call';
+      notificationTitle = ` Voice Call from ${senderName}`;
+      notificationText = text || ' Voice call';
     } else if (messageType === 'image') {
-      notificationText = '📷 Sent a photo';
+      notificationText = ' Sent a photo';
     } else if (messageType === 'video') {
-      notificationText = '🎬 Sent a video';
+      notificationText = ' Sent a video';
     } else if (messageType === 'document') {
-      notificationText = '📄 Sent a document';
+      notificationText = ' Sent a document';
     } else if (messageType === 'sticker') {
-      notificationText = '😊 Sent a sticker';
+      notificationText = ' Sent a sticker';
     } else if (text) {
       notificationText = text;
     }

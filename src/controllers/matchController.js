@@ -111,13 +111,13 @@ exports.likeUser = async (req, res) => {
     if (isMatch) {
       // Send Mutual Match Notification to both users with names in title
       sendPushNotification(likedId, {
-        title: `🎉 It's a Match with ${senderName}!`,
+        title: ` It's a Match with ${senderName}!`,
         body: `You and ${senderName} liked each other! Start chatting now.`,
         data: { type: 'match', userId: currentUserId.toString() }
       }).catch(err => console.error('Match push error:', err));
 
       sendPushNotification(currentUserId, {
-        title: `🎉 It's a Match with ${targetName}!`,
+        title: ` It's a Match with ${targetName}!`,
         body: `You and ${targetName} liked each other! Start chatting now.`,
         data: { type: 'match', userId: likedId.toString() }
       }).catch(err => console.error('Match push error:', err));
@@ -132,7 +132,7 @@ exports.likeUser = async (req, res) => {
               name: currentUser.firstName || currentUser.name,
               profileImage: currentUser.profileImage || '',
             },
-            title: `🎉 It's a Match with ${senderName}!`,
+            title: ` It's a Match with ${senderName}!`,
             body: `You and ${senderName} liked each other! Start chatting now.`
           });
         }
@@ -235,19 +235,19 @@ exports.superLikeUser = async (req, res) => {
 
     if (isMatch) {
       sendPushNotification(likedId, {
-        title: `🎉 It's a Match with ${senderName}!`,
+        title: ` It's a Match with ${senderName}!`,
         body: `You and ${senderName} liked each other! Start chatting now.`,
         data: { type: 'match', userId: currentUserId.toString() }
       }).catch(err => console.error('Match push error:', err));
 
       sendPushNotification(currentUserId, {
-        title: `🎉 It's a Match with ${targetName}!`,
+        title: ` It's a Match with ${targetName}!`,
         body: `You and ${targetName} liked each other! Start chatting now.`,
         data: { type: 'match', userId: likedId.toString() }
       }).catch(err => console.error('Match push error:', err));
     } else {
       sendPushNotification(likedId, {
-        title: `⭐ ${senderName} Super Liked your profile!`,
+        title: ` ${senderName} Super Liked your profile!`,
         body: `${senderName} Super Liked your profile! Open the app to see them at the top of your Likes.`,
         data: { type: 'superlike', userId: currentUserId.toString() }
       }).catch(err => console.error('Super Like push error:', err));
@@ -262,7 +262,7 @@ exports.superLikeUser = async (req, res) => {
               profileImage: currentUser.profileImage || '',
               isSuperLike: true,
             },
-            title: `⭐ ${senderName} Super Liked your profile!`,
+            title: ` ${senderName} Super Liked your profile!`,
             body: `${senderName} Super Liked your profile! Open the app to see them at the top of your Likes.`
           });
         }
@@ -307,9 +307,9 @@ function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(lat1 * (Math.PI / 180)) *
-      Math.cos(lat2 * (Math.PI / 180)) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+    Math.cos(lat2 * (Math.PI / 180)) *
+    Math.sin(dLon / 2) *
+    Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
