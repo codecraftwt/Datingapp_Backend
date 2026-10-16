@@ -66,8 +66,8 @@ app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     return res.status(400).json({ message: 'Invalid JSON format in request body.' });
   }
-  if (err && err.status === 413) {
-    return res.status(413).json({ message: 'Uploaded video file size is too large. Please select or trim a video clip under 15 seconds (max 35MB).' });
+  if (err && (err.status === 413 || err.statusCode === 413 || err.type === 'entity.too.large')) {
+    return res.status(413).json({ success: false, message: 'Uploaded file size exceeds maximum limit (max 100MB).' });
   }
   next(err);
 });

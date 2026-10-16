@@ -399,51 +399,77 @@ exports.uploadChatMedia = async (req, res) => {
     const bodyFile = req.body?.file || req.body?.image || req.body?.photo || req.body?.base64;
 
     if (!file && !bodyFile) {
-      return res.status(400).json({ message: 'No file uploaded.' });
+      return res.status(400).json({ success: false, message: 'No file uploaded.' });
     }
 
     let mediaUrl = null;
     let originalName = file?.originalname || 'chat_file';
     let size = file?.size || 0;
 
+    const lowerName = originalName.toLowerCase();
+    const mime = (file?.mimetype || '').toLowerCase();
+    const isVideo = mime.startsWith('video/') || /\.(mp4|mov|webm|3gp|mkv|avi|m4v|flv)$/i.test(lowerName);
+    const isAudio = mime.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg)$/i.test(lowerName);
+
     const doCloudinaryUpload = async (inputData) => {
-      let resourceType = 'auto';
-      if (file && file.mimetype) {
-        if (file.mimetype.startsWith('video/') || file.mimetype.startsWith('audio/')) {
-          resourceType = 'video';
-        } else if (!file.mimetype.startsWith('image/')) {
-          resourceType = 'raw';
+      // 1. Video handling
+      if (isVideo) {
+        try {
+          console.log(`[ChatMedia] Uploading video to Cloudinary via upload_large...`);
+          const cloudRes = await cloudinary.uploader.upload_large(inputData, {
+            folder: 'dating_app_chat_media',
+            resource_type: 'video',
+            chunk_size: 6000000,
+            timeout: 25000,
+          });
+          if (cloudRes && cloudRes.secure_url) {
+            return cloudRes.secure_url;
+          }
+        } catch (vErr) {
+          console.warn('[ChatMedia] Cloudinary video signed upload failed, attempting unsigned:', vErr.message || vErr);
+          try {
+            const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', {
+              resource_type: 'video',
+              timeout: 20000,
+            });
+            if (cloudRes && cloudRes.secure_url) {
+              return cloudRes.secure_url;
+            }
+          } catch (uErr) {
+            console.warn('[ChatMedia] Cloudinary video unsigned upload failed:', uErr.message || uErr);
+          }
         }
-      } else if (file && file.originalname) {
-        const lowerName = file.originalname.toLowerCase();
-        if (/\.(mp3|m4a|aac|wav|ogg|3gp|mp4|mov|webm)$/.test(lowerName)) {
-          resourceType = 'video';
-        }
+        // Immediately return null for videos so local /uploads/ fallback takes over
+        return null;
       }
 
+      // 2. Non-video handling (Photos, Audio, Documents)
+      let resourceType = isAudio ? 'video' : mime.startsWith('image/') ? 'image' : 'raw';
       const typesToTry = [resourceType, 'auto', 'raw'].filter((v, idx, arr) => arr.indexOf(v) === idx);
 
       for (const resType of typesToTry) {
         try {
-          console.log(`Chat Media: Uploading to Cloudinary with resource_type='${resType}'...`);
+          console.log(`[ChatMedia] Uploading to Cloudinary with resource_type='${resType}'...`);
           const cloudRes = await cloudinary.uploader.upload(inputData, {
             folder: 'dating_app_chat_media',
             resource_type: resType,
+            timeout: 25000,
           });
           if (cloudRes && cloudRes.secure_url) {
             return cloudRes.secure_url;
           }
         } catch (err1) {
-          console.warn(`Chat Media signed upload (${resType}) failed:`, err1.message || err1);
+          console.warn(`[ChatMedia] Signed upload (${resType}) failed:`, err1.message || err1);
           try {
             const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', {
               resource_type: resType,
+              timeout: 20000,
             });
             if (cloudRes && cloudRes.secure_url) {
               return cloudRes.secure_url;
             }
           } catch (err2) {
-            console.warn(`Chat Media unsigned_upload (${resType}) failed:`, err2.message || err2);
+            console.warn(`[ChatMedia] Unsigned upload (${resType}) failed:`, err2.message || err2);
           }
         }
       }
@@ -459,16 +485,17 @@ exports.uploadChatMedia = async (req, res) => {
         mediaUrl = `${protocol}://${host}/uploads/${filename}`;
         console.log('[uploadChatMedia] Using local /uploads/ fallback URL:', mediaUrl);
       } else {
+        // Only unlink if uploaded to Cloudinary
         if (fs.existsSync(file.path)) {
           try { fs.unlinkSync(file.path); } catch (e) { }
         }
       }
     } else if (file && file.buffer) {
-      const mime = file.mimetype || 'image/jpeg';
-      const base64Str = `data:${mime};base64,${file.buffer.toString('base64')}`;
+      const mimeType = file.mimetype || 'image/jpeg';
+      const base64Str = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
       mediaUrl = await doCloudinaryUpload(base64Str);
       if (!mediaUrl) {
-        console.log('Chat Media: Using Base64 Data URI fallback');
+        console.log('[uploadChatMedia] Using Base64 Data URI fallback');
         mediaUrl = base64Str;
       }
     } else if (bodyFile && typeof bodyFile === 'string' && bodyFile.length > 20) {
@@ -479,18 +506,19 @@ exports.uploadChatMedia = async (req, res) => {
     }
 
     if (!mediaUrl) {
-      return res.status(500).json({ message: 'Failed to upload chat media to Cloudinary.' });
+      return res.status(500).json({ success: false, message: 'Failed to upload chat media to server.' });
     }
 
     return res.status(200).json({
-      message: 'Chat media uploaded successfully to Cloudinary',
+      success: true,
+      message: 'Chat media uploaded successfully',
       url: mediaUrl,
       fileName: originalName,
       fileSize: size,
     });
   } catch (error) {
     console.error('Chat media upload error:', error);
-    return res.status(500).json({ message: 'Server error during chat media upload.', error: error.message });
+    return res.status(500).json({ success: false, message: 'Server error during chat media upload.', error: error.message });
   }
 };
 

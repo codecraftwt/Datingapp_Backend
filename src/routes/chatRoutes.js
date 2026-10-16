@@ -16,11 +16,20 @@ router.delete('/messages/clear-all', auth, chatController.clearAllChats);
 router.delete('/messages/clear/:selectedUserId', auth, chatController.clearChat);
 
 // Support both /api/chat/upload and /api/chat/chat/upload
-router.post(['/upload', '/chat/upload'], auth, upload.any(), (req, res, next) => {
-  if (req.files && req.files.length > 0) {
-    req.file = req.files[0];
-  }
-  next();
+router.post(['/upload', '/chat/upload'], auth, (req, res, next) => {
+  upload.any()(req, res, (err) => {
+    if (err) {
+      console.error('[ChatUpload] Multer upload error:', err);
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ success: false, message: 'File size exceeds maximum limit (max 100MB).' });
+      }
+      return res.status(400).json({ success: false, message: err.message || 'File upload error.' });
+    }
+    if (req.files && req.files.length > 0) {
+      req.file = req.files[0];
+    }
+    next();
+  });
 }, chatController.uploadChatMedia);
 
 module.exports = router;
