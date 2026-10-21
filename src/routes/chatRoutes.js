@@ -15,6 +15,10 @@ router.delete('/messages/:messageId', auth, chatController.deleteMessage);
 router.delete('/messages/clear-all', auth, chatController.clearAllChats);
 router.delete('/messages/clear/:selectedUserId', auth, chatController.clearChat);
 
+// Public media streaming routes (no auth required so native audio/video players can stream directly)
+router.get(['/media/:mediaId', '/chat/media/:mediaId'], chatController.getChatMediaById);
+router.get(['/file/:filename', '/chat/file/:filename'], chatController.getChatMediaByName);
+
 // Support both /api/chat/upload and /api/chat/chat/upload
 router.post(['/upload', '/chat/upload'], auth, (req, res, next) => {
   upload.any()(req, res, (err) => {

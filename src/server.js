@@ -73,6 +73,45 @@ app.use((err, req, res, next) => {
 });
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
+// Fallback for /uploads/:filename: If not on local disk (or in serverless), stream from MongoDB ChatMedia
+const ChatMedia = require('./models/ChatMedia');
+app.get('/uploads/:filename', async (req, res, next) => {
+  try {
+    const { filename } = req.params;
+    const media = await ChatMedia.findOne({ fileName: filename });
+    if (media && media.data) {
+      const total = media.data.length;
+      const range = req.headers.range;
+
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Type', media.mimeType || 'application/octet-stream');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+
+        if (start >= total || end >= total || start > end) {
+          res.setHeader('Content-Range', `bytes */${total}`);
+          return res.status(416).send('Requested range not satisfiable');
+        }
+
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+        res.setHeader('Content-Length', end - start + 1);
+        return res.end(media.data.subarray(start, end + 1));
+      } else {
+        res.setHeader('Content-Length', total);
+        return res.end(media.data);
+      }
+    }
+    return next();
+  } catch (err) {
+    return next();
+  }
+});
+
 // Database Connection & Permanent Pool Configuration
 const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/Dating_App';
 
@@ -584,6 +623,8 @@ io.on('connection', (socket) => {
         tempId: tempId || null,
         replyTo: parsedReplyTo || null,
         reactions: [],
+        starredBy: [],
+        isStarred: false,
         isForwarded: Boolean(isForwarded),
       };
 
@@ -860,7 +901,20 @@ io.on('connection', (socket) => {
         return;
       }
 
-      msg.isStarred = !!isStarred;
+      if (!Array.isArray(msg.starredBy)) {
+        msg.starredBy = [];
+      }
+
+      const sObjectId = mongoose.Types.ObjectId.isValid(sIdStr) ? new mongoose.Types.ObjectId(sIdStr) : null;
+      const isAlreadyStarred = msg.starredBy.some((id) => id.toString() === sIdStr);
+
+      if (isStarred && !isAlreadyStarred && sObjectId) {
+        msg.starredBy.push(sObjectId);
+      } else if (!isStarred && isAlreadyStarred) {
+        msg.starredBy = msg.starredBy.filter((id) => id.toString() !== sIdStr);
+      }
+
+      msg.isStarred = msg.starredBy.length > 0;
       await msg.save();
 
       const payload = {
@@ -868,14 +922,16 @@ io.on('connection', (socket) => {
         tempId: msg.tempId || messageId,
         isStarred: !!isStarred,
         senderId: sIdStr,
+        userId: sIdStr,
         receiverId: rIdStr,
+        starredBy: (msg.starredBy || []).map(id => id.toString()),
       };
+
+      // In WhatsApp, starred messages are personal bookmarks for each user.
+      // Emit ONLY to the user who starred/unstarred the message (senderId), NEVER to receiverId!
       io.to(sIdStr).emit('message_star_updated', payload);
-      if (rIdStr && rIdStr !== sIdStr) {
-        io.to(rIdStr).emit('message_star_updated', payload);
-        const rSocketId = onlineUsers.get(rIdStr);
-        if (rSocketId) io.to(rSocketId).emit('message_star_updated', payload);
-      }
+      const sSocketId = onlineUsers.get(sIdStr);
+      if (sSocketId) io.to(sSocketId).emit('message_star_updated', payload);
     } catch (err) {
       console.error('Error handling star_message event:', err);
     }

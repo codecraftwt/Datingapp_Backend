@@ -3,6 +3,7 @@ const Message = require('../models/Message');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Block = require('../models/Block');
+const ChatMedia = require('../models/ChatMedia');
 const { sendPushNotification } = require('../services/pushNotificationService');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
@@ -76,7 +77,19 @@ exports.getMessages = async (req, res) => {
       };
     });
 
-    return res.status(200).json({ messages, conversationPartners });
+    const formattedMessages = messages.map((msg) => {
+      const msgObj = msg.toObject ? msg.toObject() : { ...msg };
+      const isStarredByMe = Array.isArray(msgObj.starredBy)
+        ? msgObj.starredBy.some((id) => id.toString() === currentUserIdStr)
+        : false;
+      return {
+        ...msgObj,
+        starredBy: Array.isArray(msgObj.starredBy) ? msgObj.starredBy : [],
+        isStarred: isStarredByMe,
+      };
+    });
+
+    return res.status(200).json({ messages: formattedMessages, conversationPartners });
   } catch (error) {
     console.error('Fetch all messages error:', error);
     return res.status(500).json({ message: 'Server error while fetching messages.' });
@@ -178,9 +191,22 @@ exports.getChatMessages = async (req, res) => {
     console.log(`   => Conclusion: ${isPartnerOnline ? 'Partner is active on app with network -> displays "Online 🟢"' : 'Partner closed app/disconnected -> displays "Offline 🔴"'}`);
     console.log(`======================================================\n`);
 
+    const currentUserIdStr = currentUserId.toString();
+    const formattedMessages = messages.map((msg) => {
+      const msgObj = msg.toObject ? msg.toObject() : { ...msg };
+      const isStarredByMe = Array.isArray(msgObj.starredBy)
+        ? msgObj.starredBy.some((id) => id.toString() === currentUserIdStr)
+        : false;
+      return {
+        ...msgObj,
+        starredBy: Array.isArray(msgObj.starredBy) ? msgObj.starredBy : [],
+        isStarred: isStarredByMe,
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      messages,
+      messages: formattedMessages,
       isBlockedByMe,
       isBlockedByOther,
       partner: partnerUser ? {
@@ -391,7 +417,107 @@ exports.clearChat = async (req, res) => {
 };
 
 /**
- * Upload chat media to Cloudinary (for photos & documents)
+/**
+ * Stream a binary buffer with full HTTP Range request support (essential for audio/video seeking)
+ */
+const streamMediaBuffer = (req, res, buffer, mimeType) => {
+  if (!buffer || !buffer.length) {
+    return res.status(404).send('Media data empty or not found');
+  }
+  const total = buffer.length;
+  const range = req.headers.range;
+
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  if (range) {
+    const parts = range.replace(/bytes=/, '').split('-');
+    const partialStart = parts[0];
+    const partialEnd = parts[1];
+
+    const start = parseInt(partialStart, 10);
+    const end = partialEnd ? parseInt(partialEnd, 10) : total - 1;
+
+    if (start >= total || end >= total || start > end) {
+      res.setHeader('Content-Range', `bytes */${total}`);
+      return res.status(416).send('Requested range not satisfiable');
+    }
+
+    const chunksize = end - start + 1;
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+    res.setHeader('Content-Length', chunksize);
+    return res.end(buffer.subarray(start, end + 1));
+  } else {
+    res.setHeader('Content-Length', total);
+    return res.end(buffer);
+  }
+};
+
+/**
+ * Stream Chat Media by MongoDB ID
+ */
+exports.getChatMediaById = async (req, res) => {
+  try {
+    const { mediaId } = req.params;
+    if (!mediaId || !mongoose.Types.ObjectId.isValid(mediaId)) {
+      return res.status(404).json({ success: false, message: 'Invalid media ID' });
+    }
+    const media = await ChatMedia.findById(mediaId);
+    if (!media || !media.data) {
+      return res.status(404).json({ success: false, message: 'Media not found' });
+    }
+    return streamMediaBuffer(req, res, media.data, media.mimeType);
+  } catch (error) {
+    console.error('Error streaming chat media by id:', error);
+    return res.status(500).json({ success: false, message: 'Error streaming media' });
+  }
+};
+
+/**
+ * Stream Chat Media by filename (looks in local /uploads and MongoDB ChatMedia)
+ */
+exports.getChatMediaByName = async (req, res) => {
+  try {
+    const { filename } = req.params;
+    if (!filename) {
+      return res.status(404).json({ success: false, message: 'No filename specified' });
+    }
+
+    // 1. Check local uploads folder first
+    const localUploadsDir = path.join(__dirname, '../../uploads');
+    const localFilePath = path.join(localUploadsDir, filename);
+    if (fs.existsSync(localFilePath)) {
+      const ext = path.extname(filename).toLowerCase();
+      let mimeType = 'application/octet-stream';
+      if (['.mp4', '.m4a'].includes(ext)) mimeType = 'audio/mp4';
+      else if (['.mp3'].includes(ext)) mimeType = 'audio/mpeg';
+      else if (['.wav'].includes(ext)) mimeType = 'audio/wav';
+      else if (['.jpg', '.jpeg'].includes(ext)) mimeType = 'image/jpeg';
+      else if (['.png'].includes(ext)) mimeType = 'image/png';
+      else if (['.pdf'].includes(ext)) mimeType = 'application/pdf';
+
+      const fileBuffer = fs.readFileSync(localFilePath);
+      return streamMediaBuffer(req, res, fileBuffer, mimeType);
+    }
+
+    // 2. Fallback to MongoDB ChatMedia
+    const media = await ChatMedia.findOne({ fileName: filename });
+    if (media && media.data) {
+      return streamMediaBuffer(req, res, media.data, media.mimeType);
+    }
+
+    return res.status(404).json({ success: false, message: 'Media file not found' });
+  } catch (error) {
+    console.error('Error streaming chat media by name:', error);
+    return res.status(500).json({ success: false, message: 'Error streaming media' });
+  }
+};
+
+/**
+ * Upload chat media (voice notes, audio, images, documents)
+ * Saves to Cloudinary if available, with permanent fallback to MongoDB ChatMedia.
  */
 exports.uploadChatMedia = async (req, res) => {
   try {
@@ -408,8 +534,30 @@ exports.uploadChatMedia = async (req, res) => {
 
     const lowerName = originalName.toLowerCase();
     const mime = (file?.mimetype || '').toLowerCase();
-    const isVideo = mime.startsWith('video/') || /\.(mp4|mov|webm|3gp|mkv|avi|m4v|flv)$/i.test(lowerName);
-    const isAudio = mime.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg)$/i.test(lowerName);
+    const isVoiceName = lowerName.startsWith('voice_') || lowerName.includes('voice_');
+    const isAudio = mime.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|opus)$/i.test(lowerName) || isVoiceName;
+    const isVideo = !isAudio && (mime.startsWith('video/') || /\.(mp4|mov|webm|3gp|mkv|avi|m4v|flv)$/i.test(lowerName));
+
+    // Resolve file buffer from either memory, disk path, or Base64 body
+    let fileBuffer = null;
+    if (file && file.buffer) {
+      fileBuffer = file.buffer;
+    } else if (file && file.path && fs.existsSync(file.path)) {
+      try {
+        fileBuffer = fs.readFileSync(file.path);
+        if (!size) size = fileBuffer.length;
+      } catch (readErr) {
+        console.warn('[uploadChatMedia] Failed to read file from path:', readErr.message);
+      }
+    } else if (bodyFile && typeof bodyFile === 'string' && bodyFile.startsWith('data:')) {
+      try {
+        const matches = bodyFile.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
+        if (matches && matches[2]) {
+          fileBuffer = Buffer.from(matches[2], 'base64');
+          if (!size) size = fileBuffer.length;
+        }
+      } catch (_) { }
+    }
 
     const doCloudinaryUpload = async (inputData) => {
       // 1. Video handling
@@ -426,20 +574,8 @@ exports.uploadChatMedia = async (req, res) => {
             return cloudRes.secure_url;
           }
         } catch (vErr) {
-          console.warn('[ChatMedia] Cloudinary video signed upload failed, attempting unsigned:', vErr.message || vErr);
-          try {
-            const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', {
-              resource_type: 'video',
-              timeout: 20000,
-            });
-            if (cloudRes && cloudRes.secure_url) {
-              return cloudRes.secure_url;
-            }
-          } catch (uErr) {
-            console.warn('[ChatMedia] Cloudinary video unsigned upload failed:', uErr.message || uErr);
-          }
+          console.warn('[ChatMedia] Cloudinary video signed upload failed:', vErr.message || vErr);
         }
-        // Immediately return null for videos so local /uploads/ fallback takes over
         return null;
       }
 
@@ -453,24 +589,14 @@ exports.uploadChatMedia = async (req, res) => {
           const cloudRes = await cloudinary.uploader.upload(inputData, {
             folder: 'dating_app_chat_media',
             resource_type: resType,
+            public_id: isAudio ? `voice_${Date.now()}_${Math.round(Math.random() * 1e6)}` : undefined,
             timeout: 25000,
           });
           if (cloudRes && cloudRes.secure_url) {
             return cloudRes.secure_url;
           }
         } catch (err1) {
-          console.warn(`[ChatMedia] Signed upload (${resType}) failed:`, err1.message || err1);
-          try {
-            const cloudRes = await cloudinary.uploader.unsigned_upload(inputData, 'Dating_Profiles', {
-              resource_type: resType,
-              timeout: 20000,
-            });
-            if (cloudRes && cloudRes.secure_url) {
-              return cloudRes.secure_url;
-            }
-          } catch (err2) {
-            console.warn(`[ChatMedia] Unsigned upload (${resType}) failed:`, err2.message || err2);
-          }
+          console.warn(`[ChatMedia] Cloudinary upload (${resType}) failed:`, err1.message || err1);
         }
       }
       return null;
@@ -478,31 +604,61 @@ exports.uploadChatMedia = async (req, res) => {
 
     if (file && file.path) {
       mediaUrl = await doCloudinaryUpload(file.path);
-      if (!mediaUrl) {
-        const filename = path.basename(file.path);
-        const protocol = req.protocol || 'http';
-        let host = req.get('host') || 'localhost:5000';
-        mediaUrl = `${protocol}://${host}/uploads/${filename}`;
-        console.log('[uploadChatMedia] Using local /uploads/ fallback URL:', mediaUrl);
-      } else {
-        // Only unlink if uploaded to Cloudinary
-        if (fs.existsSync(file.path)) {
-          try { fs.unlinkSync(file.path); } catch (e) { }
-        }
-      }
-    } else if (file && file.buffer) {
-      const mimeType = file.mimetype || 'image/jpeg';
-      const base64Str = `data:${mimeType};base64,${file.buffer.toString('base64')}`;
+    } else if (fileBuffer) {
+      const mimeType = mime || (isAudio ? 'audio/mp4' : isVideo ? 'video/mp4' : 'application/octet-stream');
+      const base64Str = `data:${mimeType};base64,${fileBuffer.toString('base64')}`;
       mediaUrl = await doCloudinaryUpload(base64Str);
-      if (!mediaUrl) {
-        console.log('[uploadChatMedia] Using Base64 Data URI fallback');
-        mediaUrl = base64Str;
+    }
+
+    // If Cloudinary succeeded and file was on disk, clean up temp file
+    if (mediaUrl && file && file.path && fs.existsSync(file.path)) {
+      try { fs.unlinkSync(file.path); } catch (e) { }
+    }
+
+    // If Cloudinary was unavailable (e.g. 403 Forbidden, quota reached, network issue),
+    // save media directly into MongoDB ChatMedia so it is 100% permanently preserved
+    // and streamable across all environments (Vercel serverless and Localhost)!
+    let mediaId = null;
+    if (!mediaUrl && fileBuffer && fileBuffer.length > 0) {
+      try {
+        const generatedFilename = file?.filename || `upload_${Date.now()}_${Math.round(Math.random() * 1e9)}${path.extname(originalName) || (isAudio ? '.mp4' : '.jpg')}`;
+        const finalMime = mime || (isAudio ? 'audio/mp4' : isVideo ? 'video/mp4' : 'application/octet-stream');
+
+        const chatMedia = new ChatMedia({
+          fileName: generatedFilename,
+          originalName: originalName,
+          mimeType: finalMime,
+          size: fileBuffer.length,
+          data: fileBuffer,
+          uploadedBy: req.user?._id,
+        });
+        await chatMedia.save();
+        mediaId = chatMedia._id;
+
+        // Generate reliable streaming endpoint URL
+        const protoHeader = req.headers['x-forwarded-proto'];
+        let protocol = protoHeader ? protoHeader.split(',')[0].trim() : (req.protocol || 'http');
+        let host = req.get('host') || 'localhost:5000';
+        if (host.includes('vercel.app')) {
+          protocol = 'https';
+        }
+
+        mediaUrl = `${protocol}://${host}/api/chat/media/${chatMedia._id}`;
+        console.log('✅ [uploadChatMedia] Saved media to MongoDB ChatMedia with streaming URL:', mediaUrl);
+      } catch (mongoErr) {
+        console.error('[uploadChatMedia] Failed saving media to MongoDB ChatMedia:', mongoErr);
       }
-    } else if (bodyFile && typeof bodyFile === 'string' && bodyFile.length > 20) {
-      mediaUrl = await doCloudinaryUpload(bodyFile);
-      if (!mediaUrl) {
-        mediaUrl = bodyFile;
-      }
+    }
+
+    // Secondary fallback: local disk URL if file.path still exists
+    if (!mediaUrl && file && file.path) {
+      const filename = path.basename(file.path);
+      const protoHeader = req.headers['x-forwarded-proto'];
+      let protocol = protoHeader ? protoHeader.split(',')[0].trim() : (req.protocol || 'http');
+      let host = req.get('host') || 'localhost:5000';
+      if (host.includes('vercel.app')) protocol = 'https';
+      mediaUrl = `${protocol}://${host}/uploads/${filename}`;
+      console.log('[uploadChatMedia] Using local /uploads/ fallback URL:', mediaUrl);
     }
 
     if (!mediaUrl) {
@@ -514,7 +670,8 @@ exports.uploadChatMedia = async (req, res) => {
       message: 'Chat media uploaded successfully',
       url: mediaUrl,
       fileName: originalName,
-      fileSize: size,
+      fileSize: size || (fileBuffer ? fileBuffer.length : 0),
+      mediaId: mediaId,
     });
   } catch (error) {
     console.error('Chat media upload error:', error);
@@ -910,33 +1067,45 @@ exports.starMessage = async (req, res) => {
       return res.status(404).json({ message: 'Message not found.' });
     }
 
-    msg.isStarred = !!isStarred;
-    await msg.save();
+    if (!Array.isArray(msg.starredBy)) {
+      msg.starredBy = [];
+    }
 
     const uIdStr = currentUserId.toString();
-    const targetReceiverId = (receiverId || (msg.senderId.toString() === uIdStr ? msg.receiverId.toString() : msg.senderId.toString()))?.toString();
+    const isAlreadyStarred = msg.starredBy.some((id) => id.toString() === uIdStr);
+
+    if (isStarred && !isAlreadyStarred) {
+      msg.starredBy.push(currentUserId);
+    } else if (!isStarred && isAlreadyStarred) {
+      msg.starredBy = msg.starredBy.filter((id) => id.toString() !== uIdStr);
+    }
+
+    msg.isStarred = msg.starredBy.length > 0;
+    await msg.save();
+
     const payload = {
       messageId: msg._id.toString(),
       tempId: msg.tempId || messageId,
-      isStarred: msg.isStarred,
+      isStarred: !!isStarred,
       senderId: uIdStr,
-      receiverId: targetReceiverId,
+      userId: uIdStr,
+      starredBy: (msg.starredBy || []).map(id => id.toString()),
     };
 
+    // In WhatsApp, starring is strictly private to the user who performed the star action.
+    // Emit ONLY to the user who starred/unstarred the message (uIdStr), NEVER to the chat partner!
     const io = req.app.get('io');
     if (io) {
       io.to(uIdStr).emit('message_star_updated', payload);
-      if (targetReceiverId) {
-        io.to(targetReceiverId).emit('message_star_updated', payload);
-        const onlineUsers = global.onlineUsers || new Map();
-        const rSocketId = onlineUsers.get(targetReceiverId);
-        if (rSocketId) io.to(rSocketId).emit('message_star_updated', payload);
-      }
+      const onlineUsers = global.onlineUsers || new Map();
+      const sSocketId = onlineUsers.get(uIdStr);
+      if (sSocketId) io.to(sSocketId).emit('message_star_updated', payload);
     }
 
     return res.status(200).json({
       success: true,
-      isStarred: msg.isStarred,
+      isStarred: !!isStarred,
+      starredBy: (msg.starredBy || []).map(id => id.toString()),
       messageId: msg._id.toString(),
     });
   } catch (error) {

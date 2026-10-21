@@ -82,6 +82,12 @@ const MessageSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    starredBy: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
     isDeletedForEveryone: {
       type: Boolean,
       default: false,

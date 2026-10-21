@@ -54,14 +54,20 @@ const sendViaBrevoHttpApi = (toEmail, subject, textContent, htmlContent) => {
 
 const createTransporter = () => {
   const host = process.env.SMTP_HOST || 'smtp-relay.brevo.com';
-  const port = parseInt(process.env.SMTP_PORT || '587', 10);
+  let port = parseInt(process.env.SMTP_PORT || '465', 10);
+  // Port 587 suffers from severe ISP filtering/throttling (>100 seconds).
+  // Port 465 (secure SSL) or 2525 connects in ~500ms.
+  if (host.includes('brevo.com') && port === 587) {
+    port = 465;
+  }
+  const secure = port === 465;
   const user = process.env.SMTP_USER || SENDER_EMAIL;
   const pass = BREVO_API_KEY;
 
   return nodemailer.createTransport({
     host,
     port,
-    secure: port === 465,
+    secure,
     auth: {
       user,
       pass,
@@ -69,6 +75,9 @@ const createTransporter = () => {
     tls: {
       rejectUnauthorized: false,
     },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
   });
 };
 
@@ -138,11 +147,13 @@ const sendPasswordResetOtp = async (toEmail, otp) => {
     </div>
   `;
 
-  // Try Brevo HTTPS API first
-  try {
-    return await sendViaBrevoHttpApi(toEmail, subject, textContent, htmlContent);
-  } catch (apiErr) {
-    console.warn(`[EMAIL SERVICE] Brevo HTTP API failed (${apiErr.message}). Falling back to SMTP...`);
+  // Try Brevo HTTPS API first if an xkeysib API key is provided
+  if (BREVO_API_KEY.startsWith('xkeysib-')) {
+    try {
+      return await sendViaBrevoHttpApi(toEmail, subject, textContent, htmlContent);
+    } catch (apiErr) {
+      console.warn(`[EMAIL SERVICE] Brevo HTTP API failed (${apiErr.message}). Falling back to SMTP...`);
+    }
   }
 
   // Fallback to Nodemailer SMTP
