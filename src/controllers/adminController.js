@@ -7,8 +7,6 @@ const Report = require('../models/Report');
 const Subscription = require('../models/Subscription');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_dating_app_token_key_123!';
-const STATIC_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'admin@datingapp.com').toLowerCase();
-const STATIC_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin@123456';
 
 /**
  * POST /api/admin/register
@@ -75,64 +73,33 @@ exports.registerAdmin = async (req, res) => {
 
 /**
  * POST /api/admin/login
- * Admin Login Endpoint (Supports Static Credentials & Database Admins)
+ * Admin Login Endpoint (Verifies credentials strictly against MongoDB database)
  */
 exports.loginAdmin = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, username, password } = req.body;
+    const inputIdentifier = (email || username || '').trim().toLowerCase();
+    const inputPassword = (password || '').trim();
 
-    if (!email || !password) {
+    if (!inputIdentifier || !inputPassword) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide email and password.',
+        message: 'Please provide username/email and password.',
       });
     }
 
-    const inputEmail = email.trim().toLowerCase();
-    const inputPassword = password.trim();
+    // Query admin strictly from MongoDB database by email, username, or name (case-insensitive)
+    const escapedIdentifier = inputIdentifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const identifierRegex = new RegExp(`^${escapedIdentifier}$`, 'i');
 
-    // 1. Check if Static Admin credentials match
-    if (
-      inputEmail === STATIC_ADMIN_EMAIL &&
-      (inputPassword === STATIC_ADMIN_PASSWORD || inputPassword === 'admin123' || inputPassword === 'Admin@123456')
-    ) {
-      let admin = await Admin.findOne({ email: STATIC_ADMIN_EMAIL });
-      if (!admin) {
-        const hashedPassword = await bcrypt.hash(STATIC_ADMIN_PASSWORD, 10);
-        admin = new Admin({
-          name: 'Super Admin',
-          email: STATIC_ADMIN_EMAIL,
-          password: hashedPassword,
-          role: 'superadmin',
-        });
-      }
-      admin.lastLogin = new Date();
-      await admin.save();
+    const admin = await Admin.findOne({
+      $or: [
+        { email: identifierRegex },
+        { username: identifierRegex },
+        { name: identifierRegex },
+      ],
+    });
 
-      const payload = {
-        id: admin._id,
-        email: admin.email,
-        role: admin.role,
-        isAdmin: true,
-      };
-      const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-
-      return res.status(200).json({
-        success: true,
-        message: 'Admin login successful 🎉',
-        token,
-        admin: {
-          id: admin._id,
-          name: admin.name,
-          email: admin.email,
-          role: admin.role,
-          lastLogin: admin.lastLogin,
-        },
-      });
-    }
-
-    // 2. Fallback to Database Admin check
-    const admin = await Admin.findOne({ email: inputEmail });
     if (!admin) {
       return res.status(401).json({
         success: false,
@@ -140,7 +107,24 @@ exports.loginAdmin = async (req, res) => {
       });
     }
 
-    const isMatch = await bcrypt.compare(inputPassword, admin.password);
+    if (admin.status === 'inactive') {
+      return res.status(403).json({
+        success: false,
+        message: 'This admin account is inactive. Please contact support.',
+      });
+    }
+
+    // Verify password:
+    // Seamlessly supports both plain-text passwords (typed directly in MongoDB) AND bcrypt hashes!
+    let isMatch = false;
+    const dbPassword = (admin.password || '').toString().trim();
+    const isBcryptHash = /^\$2[aby]\$\d{2}\$/.test(dbPassword);
+    if (isBcryptHash) {
+      isMatch = await bcrypt.compare(inputPassword, dbPassword);
+    } else {
+      isMatch = (inputPassword === dbPassword);
+    }
+
     if (!isMatch) {
       return res.status(401).json({
         success: false,
@@ -153,7 +137,7 @@ exports.loginAdmin = async (req, res) => {
 
     const payload = {
       id: admin._id,
-      email: admin.email,
+      email: admin.email || admin.username,
       role: admin.role,
       isAdmin: true,
     };
@@ -166,6 +150,7 @@ exports.loginAdmin = async (req, res) => {
       admin: {
         id: admin._id,
         name: admin.name,
+        username: admin.username,
         email: admin.email,
         role: admin.role,
         lastLogin: admin.lastLogin,

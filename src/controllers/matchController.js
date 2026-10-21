@@ -755,11 +755,18 @@ exports.blockUser = async (req, res) => {
     const io = req.app.get('io') || global.io;
     if (io) {
       const receiverSocketId = global.onlineUsers ? global.onlineUsers.get(targetUserIdStr) : null;
+      const blockPayload = {
+        blockerId: currentUserId?.toString(),
+        blockedBy: currentUserId?.toString(),
+        targetUserId: targetUserIdStr,
+      };
       if (receiverSocketId) {
-        io.to(receiverSocketId).emit('user_blocked', { blockedBy: currentUserId?.toString() });
-        io.to(receiverSocketId).emit('user_blocked_by_other', { blockerId: currentUserId?.toString() });
+        io.to(receiverSocketId).emit('user_blocked', blockPayload);
+        io.to(receiverSocketId).emit('user_blocked_by_other', blockPayload);
       }
-      io.emit('user_blocked_by_other', { blockerId: currentUserId?.toString(), targetUserId: targetUserIdStr });
+      io.to(targetUserIdStr).emit('user_blocked', blockPayload);
+      io.to(targetUserIdStr).emit('user_blocked_by_other', blockPayload);
+      io.emit('user_blocked_by_other', blockPayload);
     }
 
     return res.status(200).json({
@@ -965,8 +972,19 @@ exports.unblockUser = async (req, res) => {
 
     const io = req.app.get('io') || global.io;
     if (io) {
-      // Emit only to the user who was unblocked (targetUserId = Ram), not to everyone
-      io.to(targetUserIdStr).emit('user_unblocked_by_other', { blockerId: currentUserId?.toString(), targetUserId: targetUserIdStr });
+      const receiverSocketId = global.onlineUsers ? global.onlineUsers.get(targetUserIdStr) : null;
+      const unblockPayload = {
+        blockerId: currentUserId?.toString(),
+        unblockedBy: currentUserId?.toString(),
+        targetUserId: targetUserIdStr,
+      };
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit('user_unblocked', unblockPayload);
+        io.to(receiverSocketId).emit('user_unblocked_by_other', unblockPayload);
+      }
+      io.to(targetUserIdStr).emit('user_unblocked', unblockPayload);
+      io.to(targetUserIdStr).emit('user_unblocked_by_other', unblockPayload);
+      io.emit('user_unblocked_by_other', unblockPayload);
     }
 
     return res.status(200).json({

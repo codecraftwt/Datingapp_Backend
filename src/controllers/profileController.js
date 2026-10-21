@@ -944,16 +944,26 @@ exports.getUserById = async (req, res) => {
     }
 
     // If the target user has blocked the current user, deny access to full profile
-    if (currentUserIdStr && mongoose.Types.ObjectId.isValid(currentUserIdStr)) {
+    if (currentUserIdStr) {
       const Block = require('../models/Block');
+      const targetQuery = [targetUserId.toString()];
+      const currentQuery = [currentUserIdStr.toString()];
+      if (mongoose.Types.ObjectId.isValid(targetUserId)) {
+        targetQuery.push(new mongoose.Types.ObjectId(targetUserId));
+      }
+      if (mongoose.Types.ObjectId.isValid(currentUserIdStr)) {
+        currentQuery.push(new mongoose.Types.ObjectId(currentUserIdStr));
+      }
+
       const hasBlockedMe = await Block.findOne({
-        blockerId: targetUserId,
-        blockedId: currentUserIdStr,
+        blockerId: { $in: targetQuery },
+        blockedId: { $in: currentQuery },
       });
       if (hasBlockedMe) {
         return res.status(403).json({
           message: 'Profile is unavailable because this user has blocked you.',
           user: null,
+          isBlockedByOther: true,
         });
       }
     }
