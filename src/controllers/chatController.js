@@ -142,10 +142,15 @@ exports.getChatMessages = async (req, res) => {
       }
     }).catch(() => { });
 
+    const curObjId = mongoose.Types.ObjectId.isValid(currentUserId) ? new mongoose.Types.ObjectId(currentUserId) : null;
+    const curStr = currentUserId ? currentUserId.toString() : null;
+    const currentMatches = [curObjId, curStr].filter(Boolean);
+    const selectedMatches = [selObjectId, selectedUserId ? selectedUserId.toString() : null].filter(Boolean);
+
     const messages = await Message.find({
       $or: [
-        { senderId: currentUserId, receiverId: selObjectId, deletedBySender: { $ne: true } },
-        { senderId: selObjectId, receiverId: currentUserId, deletedByReceiver: { $ne: true } }
+        { senderId: { $in: currentMatches }, receiverId: { $in: selectedMatches }, deletedBySender: { $ne: true } },
+        { senderId: { $in: selectedMatches }, receiverId: { $in: currentMatches }, deletedByReceiver: { $ne: true } }
       ]
     }).sort({ createdAt: 1 });
 
@@ -392,19 +397,39 @@ exports.clearChat = async (req, res) => {
     const currentUserId = req.user._id;
     const { selectedUserId } = req.params;
 
+    if (!selectedUserId || selectedUserId === 'undefined' || selectedUserId === 'null') {
+      return res.status(400).json({ message: 'Valid selectedUserId is required.' });
+    }
+
+    const curObjId = mongoose.Types.ObjectId.isValid(currentUserId) ? new mongoose.Types.ObjectId(currentUserId) : null;
+    const curStr = currentUserId ? currentUserId.toString() : null;
+    const selObjId = mongoose.Types.ObjectId.isValid(selectedUserId) ? new mongoose.Types.ObjectId(selectedUserId) : null;
+    const selStr = selectedUserId ? selectedUserId.toString() : null;
+
+    const currentMatches = [curObjId, curStr].filter(Boolean);
+    const selectedMatches = [selObjId, selStr].filter(Boolean);
+
     await Message.updateMany(
-      { senderId: currentUserId, receiverId: selectedUserId },
+      {
+        senderId: { $in: currentMatches },
+        receiverId: { $in: selectedMatches },
+      },
       { $set: { deletedBySender: true } }
     );
 
     await Message.updateMany(
-      { senderId: selectedUserId, receiverId: currentUserId },
+      {
+        senderId: { $in: selectedMatches },
+        receiverId: { $in: currentMatches },
+      },
       { $set: { deletedByReceiver: true } }
     );
 
     await Message.deleteMany({
-      senderId: { $in: [currentUserId, selectedUserId] },
-      receiverId: { $in: [currentUserId, selectedUserId] },
+      $or: [
+        { senderId: { $in: currentMatches }, receiverId: { $in: selectedMatches } },
+        { senderId: { $in: selectedMatches }, receiverId: { $in: currentMatches } },
+      ],
       deletedBySender: true,
       deletedByReceiver: true
     });
