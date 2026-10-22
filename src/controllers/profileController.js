@@ -1110,7 +1110,7 @@ exports.getOnlineUsers = async (req, res) => {
           age: u.age || 22,
           distance: distanceText,
           bio: u.bio || '',
-          interests: u.interests && u.interests.length > 0 ? u.interests : ['☕ Coffee lover'],
+          interests: u.interests && u.interests.length > 0 ? u.interests : ['Coffee'],
           image: u.profileImage || null,
           gender: u.gender,
           orientation: u.orientation || 'Straight',

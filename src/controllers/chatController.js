@@ -1089,7 +1089,12 @@ exports.starMessage = async (req, res) => {
       isStarred: !!isStarred,
       senderId: uIdStr,
       userId: uIdStr,
+      receiverId: receiverId ? receiverId.toString() : '',
       starredBy: (msg.starredBy || []).map(id => id.toString()),
+      mediaUrl: msg.mediaUrl,
+      messageType: msg.messageType,
+      fileName: msg.fileName,
+      fileSize: msg.fileSize,
     };
 
     // In WhatsApp, starring is strictly private to the user who performed the star action.

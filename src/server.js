@@ -925,6 +925,10 @@ io.on('connection', (socket) => {
         userId: sIdStr,
         receiverId: rIdStr,
         starredBy: (msg.starredBy || []).map(id => id.toString()),
+        mediaUrl: msg.mediaUrl,
+        messageType: msg.messageType,
+        fileName: msg.fileName,
+        fileSize: msg.fileSize,
       };
 
       // In WhatsApp, starred messages are personal bookmarks for each user.
