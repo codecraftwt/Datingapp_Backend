@@ -1,7 +1,8 @@
 const nodemailer = require('nodemailer');
 const https = require('https');
 
-const BREVO_API_KEY = process.env.SMTP_PASSWORD || '';
+const BREVO_API_KEY = process.env.BREVO_API_KEY || process.env.SMTP_API_KEY || (process.env.SMTP_PASSWORD && process.env.SMTP_PASSWORD.startsWith('xkeysib-') ? process.env.SMTP_PASSWORD : '');
+const SMTP_PASS = process.env.SMTP_PASSWORD || '';
 const SENDER_EMAIL = process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER || '';
 
 /**
@@ -11,7 +12,7 @@ const sendViaBrevoHttpApi = (toEmail, subject, textContent, htmlContent) => {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       sender: { name: 'Dating App Security', email: SENDER_EMAIL },
-      to: [{ email: toEmail }],
+      to: [{ email: toEmail.trim().toLowerCase() }],
       subject,
       htmlContent,
       textContent,
@@ -27,7 +28,7 @@ const sendViaBrevoHttpApi = (toEmail, subject, textContent, htmlContent) => {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(payload),
       },
-      timeout: 10000,
+      timeout: 8000,
     }, (res) => {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
@@ -56,13 +57,13 @@ const createTransporter = () => {
   const host = process.env.SMTP_HOST || 'smtp-relay.brevo.com';
   let port = parseInt(process.env.SMTP_PORT || '465', 10);
   // Port 587 suffers from severe ISP filtering/throttling (>100 seconds).
-  // Port 465 (secure SSL) or 2525 connects in ~500ms.
+  // Port 465 (secure SSL) connects in ~500ms.
   if (host.includes('brevo.com') && port === 587) {
     port = 465;
   }
   const secure = port === 465;
   const user = process.env.SMTP_USER || SENDER_EMAIL;
-  const pass = BREVO_API_KEY;
+  const pass = SMTP_PASS;
 
   return nodemailer.createTransport({
     host,
@@ -75,9 +76,9 @@ const createTransporter = () => {
     tls: {
       rejectUnauthorized: false,
     },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
+    connectionTimeout: 6000,
+    greetingTimeout: 6000,
+    socketTimeout: 10000,
   });
 };
 
@@ -101,7 +102,7 @@ const sendMobileVerificationOtp = async (toEmail, otp) => {
   `;
 
   // Use Brevo HTTPS API if an xkeysib API key is provided
-  if (BREVO_API_KEY.startsWith('xkeysib-')) {
+  if (BREVO_API_KEY && BREVO_API_KEY.startsWith('xkeysib-')) {
     try {
       return await sendViaBrevoHttpApi(toEmail, subject, textContent, htmlContent);
     } catch (apiErr) {
@@ -114,7 +115,7 @@ const sendMobileVerificationOtp = async (toEmail, otp) => {
     const transporter = createTransporter();
     const info = await transporter.sendMail({
       from: `"Dating App Security" <${SENDER_EMAIL}>`,
-      to: toEmail,
+      to: toEmail.trim().toLowerCase(),
       subject,
       text: textContent,
       html: htmlContent,
@@ -148,7 +149,7 @@ const sendPasswordResetOtp = async (toEmail, otp) => {
   `;
 
   // Try Brevo HTTPS API first if an xkeysib API key is provided
-  if (BREVO_API_KEY.startsWith('xkeysib-')) {
+  if (BREVO_API_KEY && BREVO_API_KEY.startsWith('xkeysib-')) {
     try {
       return await sendViaBrevoHttpApi(toEmail, subject, textContent, htmlContent);
     } catch (apiErr) {
@@ -161,7 +162,7 @@ const sendPasswordResetOtp = async (toEmail, otp) => {
     const transporter = createTransporter();
     const info = await transporter.sendMail({
       from: `"Dating App Security" <${SENDER_EMAIL}>`,
-      to: toEmail,
+      to: toEmail.trim().toLowerCase(),
       subject,
       text: textContent,
       html: htmlContent,

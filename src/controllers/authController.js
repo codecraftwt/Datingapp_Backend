@@ -302,14 +302,14 @@ exports.login = async (req, res) => {
         await User.findByIdAndUpdate(user._id, {
           $set: { emailOtp: otp, emailOtpExpires: otpExpires }
         });
-        // Dispatch OTP email asynchronously in background so login response returns immediately (<300ms)
-        emailService.sendMobileVerificationOtp(user.email, otp)
-          .then(() => {
-            console.log(`[AUTH CONTROLLER] Sent mobile verification OTP to registered email ${user.email} on login.`);
-          })
-          .catch((emailErr) => {
-            console.error(`[AUTH CONTROLLER] Failed to send OTP email to ${user.email}:`, emailErr.message);
-          });
+        console.log(`🔑 [DEV DEBUG OTP] Generated Mobile Verification OTP for ${user.email} on login: >>> ${otp} <<<`);
+        // MUST AWAIT so serverless runtimes (Vercel) do not freeze/kill execution before email is sent
+        try {
+          await emailService.sendMobileVerificationOtp(user.email, otp);
+          console.log(`[AUTH CONTROLLER] Sent mobile verification OTP to registered email ${user.email} on login.`);
+        } catch (emailErr) {
+          console.error(`[AUTH CONTROLLER] Failed to send OTP email to ${user.email}:`, emailErr.message);
+        }
       } catch (dbErr) {
         console.error(`[AUTH CONTROLLER] Failed to save OTP in database for ${user.email}:`, dbErr.message);
       }
@@ -830,14 +830,17 @@ exports.sendMobileOtp = async (req, res) => {
 
     console.log(`🔑 [DEV DEBUG OTP] Generated Mobile Verification OTP for ${user.email}: >>> ${otp} <<<`);
 
-    // Dispatch OTP email asynchronously so the client UI updates immediately
-    emailService.sendMobileVerificationOtp(user.email, otp)
-      .then(() => {
-        console.log(`[AUTH CONTROLLER] Resent mobile verification OTP to registered email ${user.email}.`);
-      })
-      .catch((emailErr) => {
-        console.error('[AUTH CONTROLLER] Failed to send mobile OTP email:', emailErr.message);
+    // MUST AWAIT so serverless runtimes (Vercel) do not freeze/kill execution before email is sent
+    try {
+      await emailService.sendMobileVerificationOtp(user.email, otp);
+      console.log(`[AUTH CONTROLLER] Resent mobile verification OTP to registered email ${user.email}.`);
+    } catch (emailErr) {
+      console.error('[AUTH CONTROLLER] Failed to send mobile OTP email:', emailErr.message);
+      return res.status(500).json({
+        message: 'Failed to send verification OTP email. Please try again.',
+        error: emailErr.message,
       });
+    }
 
     return res.status(200).json({
       success: true,
