@@ -90,8 +90,12 @@ const auth = async (req, res, next) => {
         });
       }
 
-      // Check single-device active token enforcement
-      if (!user.currentToken || user.currentToken !== token) {
+      // Single-device active token enforcement:
+      // Only conflict if another device has actively established a DIFFERENT token.
+      // If currentToken is null/not yet set in DB, adopt this valid token seamlessly without logging the user out.
+      if (!user.currentToken) {
+        User.findByIdAndUpdate(userId, { $set: { currentToken: token } }).catch(() => {});
+      } else if (user.currentToken !== token) {
         return res.status(401).json({
           message: 'Logged out because your account was accessed on another device or logged out from all devices.',
           code: 'SINGLE_DEVICE_CONFLICT',
