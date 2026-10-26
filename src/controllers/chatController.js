@@ -810,44 +810,46 @@ exports.sendMessage = async (req, res) => {
       }
     }
 
-    // Trigger FCM Push Notification
-    const senderUser = await User.findById(senderId).select('firstName name');
-    const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
+    // Send HTTP response instantly to client without blocking on notification lookups
+    res.status(201).json({ message: 'Message sent successfully.', data: msgData });
 
-    let notificationText = ' Sent a message';
-    let notificationTitle = ` ${senderName}`;
+    // Trigger FCM Push Notification asynchronously in background thread
+    User.findById(senderId).select('firstName name').lean().then((senderUser) => {
+      const senderName = senderUser?.firstName || senderUser?.name || 'Someone';
 
-    if (messageType === 'voice') {
-      notificationTitle = ` Voice Message from ${senderName}`;
-      notificationText = ' Sent a voice note / audio message';
-    } else if (messageType === 'call') {
-      notificationTitle = ` Voice Call from ${senderName}`;
-      notificationText = text || ' Voice call';
-    } else if (messageType === 'image') {
-      notificationText = ' Sent a photo';
-    } else if (messageType === 'video') {
-      notificationText = ' Sent a video';
-    } else if (messageType === 'document') {
-      notificationText = ' Sent a document';
-    } else if (messageType === 'sticker') {
-      notificationText = ' Sent a sticker';
-    } else if (text) {
-      notificationText = text;
-    }
+      let notificationText = ' Sent a message';
+      let notificationTitle = ` ${senderName}`;
 
-    sendPushNotification(receiverId, {
-      title: notificationTitle,
-      body: notificationText,
-      data: {
-        type: 'chat',
-        messageType: messageType || 'text',
-        senderId: senderId.toString(),
-        messageId: newMessage._id.toString(),
-        notificationId: newMessage._id.toString(),
-      },
-    }).catch((err) => console.error('REST Chat FCM push error:', err));
+      if (messageType === 'voice') {
+        notificationTitle = ` Voice Message from ${senderName}`;
+        notificationText = ' Sent a voice note / audio message';
+      } else if (messageType === 'call') {
+        notificationTitle = ` Voice Call from ${senderName}`;
+        notificationText = text || ' Voice call';
+      } else if (messageType === 'image') {
+        notificationText = ' Sent a photo';
+      } else if (messageType === 'video') {
+        notificationText = ' Sent a video';
+      } else if (messageType === 'document') {
+        notificationText = ' Sent a document';
+      } else if (messageType === 'sticker') {
+        notificationText = ' Sent a sticker';
+      } else if (text) {
+        notificationText = text;
+      }
 
-    return res.status(201).json({ message: 'Message sent successfully.', data: msgData });
+      sendPushNotification(receiverId, {
+        title: notificationTitle,
+        body: notificationText,
+        data: {
+          type: 'chat',
+          messageType: messageType || 'text',
+          senderId: senderId.toString(),
+          messageId: newMessage._id.toString(),
+          notificationId: newMessage._id.toString(),
+        },
+      }).catch((err) => console.error('REST Chat FCM push error:', err));
+    }).catch(() => {});
   } catch (error) {
     console.error('Send message REST API error:', error);
     return res.status(500).json({ message: 'Server error while sending message.' });

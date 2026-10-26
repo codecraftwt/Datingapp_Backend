@@ -121,6 +121,14 @@ exports.createCheckoutSession = async (req, res) => {
 
     // Lookup plan dynamically from MongoDB Plan collection or fallback to PLAN_CONFIG
     let dbPlan = await Plan.findOne({ planKey: planType });
+    if (!dbPlan && planType) {
+      dbPlan = await Plan.findOne({
+        $or: [
+          { planKey: new RegExp(`^${planType.trim()}$`, 'i') },
+          { name: new RegExp(`^${planType.trim()}$`, 'i') },
+        ]
+      });
+    }
     if (!dbPlan && !PLAN_CONFIG[planType]) {
       console.warn(`⚠️ [BACKEND SUBSCRIPTION STEP 2.1: INVALID_PLAN] Invalid plan type requested: "${planType}"`);
       return res.status(400).json({ message: `Invalid plan type: "${planType}".` });
