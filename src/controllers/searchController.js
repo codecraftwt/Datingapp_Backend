@@ -207,22 +207,33 @@ exports.advancedSearch = async (req, res) => {
     const pageSize = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
 
     // Get blocked user IDs to exclude from search
-    const blocks = await Block.find({
-      $or: [{ blockerId: req.user._id }, { blockedId: req.user._id }],
-    });
-    const blockedIds = blocks.map((b) =>
-      b.blockerId.toString() === req.user._id.toString() ? b.blockedId : b.blockerId
-    );
+    let excludedIds = [];
+    try {
+      const blocks = await Block.find({
+        $or: [{ blockerId: req.user._id }, { blockedId: req.user._id }],
+      }).lean();
+      const curIdStr = req.user._id ? req.user._id.toString() : '';
+      const blockedIds = (blocks || []).map((b) => {
+        if (!b) return null;
+        const bIdStr = b.blockerId ? b.blockerId.toString() : '';
+        return bIdStr === curIdStr ? b.blockedId : b.blockerId;
+      }).filter(Boolean);
 
-    // Get mutual matched user IDs to exclude from search (users who liked each other and are matched)
-    const Match = require('../models/Match');
-    const myLikes = await Match.find({ likerId: req.user._id });
-    const myLikedUserIds = myLikes.map((m) => m.likedId);
+      // Get mutual matched user IDs to exclude from search (users who liked each other and are matched)
+      const Match = require('../models/Match');
+      const myLikes = await Match.find({ likerId: req.user._id }).lean();
+      const myLikedUserIds = (myLikes || []).map((m) => m?.likedId).filter(Boolean);
 
-    const likesMe = await Match.find({ likedId: req.user._id, likerId: { $in: myLikedUserIds } });
-    const matchedUserIds = likesMe.map((m) => m.likerId);
+      let matchedUserIds = [];
+      if (myLikedUserIds.length > 0) {
+        const likesMe = await Match.find({ likedId: req.user._id, likerId: { $in: myLikedUserIds } }).lean();
+        matchedUserIds = (likesMe || []).map((m) => m?.likerId).filter(Boolean);
+      }
 
-    const excludedIds = [...blockedIds, ...matchedUserIds];
+      excludedIds = [...blockedIds, ...matchedUserIds];
+    } catch (relErr) {
+      console.warn('⚠️ [SEARCH] Non-fatal error resolving relations:', relErr.message);
+    }
 
     // Build MongoDB Query (Exclude current user, blocked profiles, matched profiles, and hidden profiles)
     const mongoQuery = {
@@ -230,10 +241,11 @@ exports.advancedSearch = async (req, res) => {
       isProfileHidden: { $ne: true },
     };
 
-    // Text Search (Name, Profession, College, Bio, Location)
+    // Text Search (Name, Profession, College, Bio, Location) - escaped against regex injection
     const textQuery = (searchKeyword || query || profession || '').toString().trim();
     if (textQuery && textQuery !== 'All') {
-      const regex = new RegExp(textQuery, 'i');
+      const escapedText = textQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escapedText, 'i');
       mongoQuery.$or = [
         { firstName: regex },
         { lastName: regex },
@@ -264,7 +276,7 @@ exports.advancedSearch = async (req, res) => {
       const interestsArray = Array.isArray(interests)
         ? interests
         : typeof interests === 'string'
-        ? interests.split(',').map((i) => i.trim())
+        ? interests.split(',').map((i) => i.trim()).filter(Boolean)
         : [];
       if (interestsArray.length > 0) {
         mongoQuery.interests = { $in: interestsArray };
@@ -276,7 +288,7 @@ exports.advancedSearch = async (req, res) => {
       const languagesArray = Array.isArray(languages)
         ? languages
         : typeof languages === 'string'
-        ? languages.split(',').map((l) => l.trim())
+        ? languages.split(',').map((l) => l.trim()).filter(Boolean)
         : [];
       if (languagesArray.length > 0) {
         mongoQuery.languages = { $in: languagesArray };
@@ -294,10 +306,13 @@ exports.advancedSearch = async (req, res) => {
 
     const buildInFilter = (filterVal) => {
       if (!filterVal) return null;
-      if (Array.isArray(filterVal) && filterVal.length > 0) return { $in: filterVal };
-      if (typeof filterVal === 'string' && filterVal.trim() !== '') {
-        const parts = filterVal.split(',').map((s) => s.trim());
-        return { $in: parts };
+      if (Array.isArray(filterVal) && filterVal.length > 0) {
+        const clean = filterVal.filter((f) => f && f !== 'All' && f !== 'Any');
+        return clean.length > 0 ? { $in: clean } : null;
+      }
+      if (typeof filterVal === 'string' && filterVal.trim() !== '' && filterVal !== 'All' && filterVal !== 'Any') {
+        const parts = filterVal.split(',').map((s) => s.trim()).filter((s) => s && s !== 'All' && s !== 'Any');
+        return parts.length > 0 ? { $in: parts } : null;
       }
       return null;
     };
@@ -310,18 +325,38 @@ exports.advancedSearch = async (req, res) => {
     if (buildInFilter(zodiacFilter)) mongoQuery.zodiac = buildInFilter(zodiacFilter);
     if (buildInFilter(lookingForFilter)) mongoQuery.lookingFor = buildInFilter(lookingForFilter);
 
-    // Active User Location coordinates prioritization
+    // Active User Location coordinates prioritization & validation
     const activeCoords =
       currentUser.currentLocation?.location?.coordinates ||
       currentUser.permanentAddress?.location?.coordinates ||
       currentUser.location?.coordinates;
 
-    const hasLocation = Array.isArray(activeCoords) && activeCoords.length === 2;
+    const hasLocation =
+      Array.isArray(activeCoords) &&
+      activeCoords.length === 2 &&
+      typeof activeCoords[0] === 'number' &&
+      typeof activeCoords[1] === 'number' &&
+      !isNaN(activeCoords[0]) &&
+      !isNaN(activeCoords[1]) &&
+      activeCoords[0] >= -180 &&
+      activeCoords[0] <= 180 &&
+      activeCoords[1] >= -90 &&
+      activeCoords[1] <= 90;
+
     let users = [];
 
-    // Attempt GeoNear spatial query if coordinates exist
+    // Attempt GeoNear spatial query if valid coordinates exist
     if (hasLocation) {
       const [lng, lat] = activeCoords;
+      let geoKey = 'currentLocation.location';
+      if (currentUser.currentLocation?.location?.coordinates) {
+        geoKey = 'currentLocation.location';
+      } else if (currentUser.permanentAddress?.location?.coordinates) {
+        geoKey = 'permanentAddress.location';
+      } else if (currentUser.location?.coordinates) {
+        geoKey = 'location';
+      }
+
       try {
         users = await User.aggregate([
           {
@@ -331,11 +366,12 @@ exports.advancedSearch = async (req, res) => {
               maxDistance: maxDistanceMeters,
               spherical: true,
               query: mongoQuery,
+              key: geoKey,
             },
           },
         ]);
       } catch (geoErr) {
-        console.error('MongoDB $geoNear failed in search, falling back to standard find:', geoErr.message);
+        console.log('ℹ️ [SEARCH] $geoNear skipped or multiple indexes present, using standard find:', geoErr.message);
         users = [];
       }
     }
@@ -351,7 +387,14 @@ exports.advancedSearch = async (req, res) => {
             u.currentLocation?.location?.coordinates ||
             u.permanentAddress?.location?.coordinates ||
             u.location?.coordinates;
-          if (Array.isArray(coords) && coords.length === 2) {
+          if (
+            Array.isArray(coords) &&
+            coords.length === 2 &&
+            typeof coords[0] === 'number' &&
+            typeof coords[1] === 'number' &&
+            !isNaN(coords[0]) &&
+            !isNaN(coords[1])
+          ) {
             const distKm = calculateHaversineDistance(userLat, userLng, coords[1], coords[0]);
             u.calculatedDistanceMeters = distKm * 1000;
             return distKm <= maxDistanceKm;
@@ -454,12 +497,12 @@ exports.advancedSearch = async (req, res) => {
     const paginatedUsers = filteredUsers.slice(startIndex, startIndex + pageSize);
 
     // Format output users to exclude sensitive fields and hidden media items
-    const formattedUsers = paginatedUsers.map((user) => {
+    const formattedUsers = paginatedUsers.filter(Boolean).map((user) => {
       const currentUserIdStr = req.user?._id ? req.user._id.toString() : '';
-      const perUserHidden = (user.hiddenProfileMedia || [])
-        .filter(item => item && item.hiddenForUserId && item.hiddenForUserId.toString() === currentUserIdStr)
-        .map(item => item.mediaUrl);
-      const globalHidden = (user.hiddenMedia || []);
+      const perUserHidden = (Array.isArray(user.hiddenProfileMedia) ? user.hiddenProfileMedia : [])
+        .filter((item) => item && item.hiddenForUserId && item.hiddenForUserId.toString() === currentUserIdStr)
+        .map((item) => item.mediaUrl);
+      const globalHidden = Array.isArray(user.hiddenMedia) ? user.hiddenMedia : [];
       const hiddenSet = new Set([...perUserHidden, ...globalHidden]);
 
       const rawGalleryMedia = [

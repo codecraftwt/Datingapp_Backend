@@ -68,9 +68,13 @@ exports.getUserPlanPermissions = async (tier) => {
   // If a plan exists in MongoDB, extract ALL permissions DYNAMICALLY from its features array!
   if (plan && Array.isArray(plan.features)) {
     plan.features.forEach((f) => {
-      const featKey = (f.featureKey || '').toUpperCase();
-      const isAllowed = Boolean(f.isAllowed);
-      const limitVal = typeof f.limitValue === 'number' ? f.limitValue : (isAllowed ? -1 : 0);
+      if (!f) return;
+      const rawKey = typeof f === 'string' ? f : (f.featureKey || f.key || f.name || '');
+      const featKey = rawKey.toString().toUpperCase().trim();
+      if (!featKey) return;
+
+      const isAllowed = typeof f === 'string' ? true : Boolean(f.isAllowed);
+      const limitVal = typeof f?.limitValue === 'number' ? f.limitValue : (isAllowed ? -1 : 0);
 
       if (featKey === 'SWIPES') {
         permissions.swipes = {
@@ -92,7 +96,7 @@ exports.getUserPlanPermissions = async (tier) => {
           isAllowed: isAllowed,
         };
       } else {
-        permissions[f.featureKey.toLowerCase()] = {
+        permissions[featKey.toLowerCase()] = {
           isAllowed: isAllowed,
           limitValue: limitVal,
         };
@@ -256,7 +260,7 @@ exports.checkSearchAccess = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error('[FEATURE ACCESS] Error checking search access:', error);
+    console.warn('⚠️ [FEATURE ACCESS] Non-fatal error checking search access:', error.message);
     next();
   }
 };
