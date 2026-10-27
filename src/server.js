@@ -359,7 +359,7 @@ io.on('connection', (socket) => {
     const uIdStr = extractUserIdStr(userId);
     console.log(`📥 [SOCKET JOIN EVENT] Raw userId received:`, JSON.stringify(userId), `-> Extracted ID: "${uIdStr}"`);
     if (uIdStr) {
-      // Deactivated user check
+        // Deactivated user check
       try {
         const dbUser = await User.findById(uIdStr).lean();
         const isDbUserDeactivated = dbUser && (dbUser.isActive === false || dbUser.status === 'deactivated' || dbUser.isDeactivated === true || Boolean(dbUser.deactivatedAt));
@@ -373,6 +373,20 @@ io.on('connection', (socket) => {
             reason: dbUser.deactivationReason || 'Account deactivated by admin moderation team',
             deactivatedAt: dbUser.deactivatedAt,
             code: 'ACCOUNT_DEACTIVATED',
+          });
+          onlineUsers.delete(uIdStr);
+          userLastPing.delete(uIdStr);
+          socket.disconnect(true);
+          return;
+        }
+
+        // Check if user session was logged out from all devices
+        if (dbUser && (dbUser.isLoggedIn === false || !dbUser.currentToken)) {
+          console.warn(`🛑 [SOCKET BLOCKED] User ${uIdStr} has no active session (logged out). Terminating socket.`);
+          socket.emit('session_terminated', {
+            message: 'Your session has been terminated because your account was logged out from all devices.',
+            code: 'SESSION_TERMINATED',
+            userId: uIdStr,
           });
           onlineUsers.delete(uIdStr);
           userLastPing.delete(uIdStr);
@@ -441,6 +455,20 @@ io.on('connection', (socket) => {
             reason: dbUser.deactivationReason || 'Account deactivated by admin moderation team',
             deactivatedAt: dbUser.deactivatedAt,
             code: 'ACCOUNT_DEACTIVATED',
+          });
+          onlineUsers.delete(uIdStr);
+          userLastPing.delete(uIdStr);
+          socket.disconnect(true);
+          return;
+        }
+
+        // Check if user session was logged out from all devices
+        if (dbUser && (dbUser.isLoggedIn === false || !dbUser.currentToken)) {
+          console.warn(`🛑 [SOCKET TERMINATED] User ${uIdStr} was logged out from all devices. Terminating socket presence.`);
+          socket.emit('session_terminated', {
+            message: 'Your session has been terminated because your account was logged out from all devices.',
+            code: 'SESSION_TERMINATED',
+            userId: uIdStr,
           });
           onlineUsers.delete(uIdStr);
           userLastPing.delete(uIdStr);

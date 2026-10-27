@@ -736,20 +736,6 @@ exports.blockUser = async (req, res) => {
         { $set: { blockerId: currentUserId, blockedId: targetObjectId, reason: req.body?.reason || '' } },
         { upsert: true, new: true }
       );
-
-      try {
-        const Match = require('../models/Match');
-        if (Match) {
-          await Match.deleteMany({
-            $or: [
-              { userId: currentUserId, matchedUserId: targetObjectId },
-              { userId: targetObjectId, matchedUserId: currentUserId }
-            ]
-          });
-        }
-      } catch (mErr) {
-        console.warn('Match cleanup warning during block:', mErr);
-      }
     }
 
     const io = req.app.get('io') || global.io;
@@ -954,18 +940,16 @@ exports.unblockUser = async (req, res) => {
 
     console.log(`[unblockUser] Blocker: ${currentUserId?.toString()} unblocking User: ${targetUserIdStr}`);
 
-    const queryOr = [{ blockedId: targetUserIdStr }];
+    const blockerMatches = [currentUserId, currentUserId?.toString()].filter(Boolean);
+    const targetMatches = [targetUserIdStr];
     if (mongoose.Types.ObjectId.isValid(targetUserIdStr)) {
-      queryOr.push({ blockedId: new mongoose.Types.ObjectId(targetUserIdStr) });
+      targetMatches.push(new mongoose.Types.ObjectId(targetUserIdStr));
     }
 
     const deleteQuery = {
-      $or: queryOr
+      blockerId: { $in: blockerMatches },
+      blockedId: { $in: targetMatches },
     };
-
-    if (currentUserId) {
-      deleteQuery.blockerId = currentUserId;
-    }
 
     const deleteRes = await Block.deleteMany(deleteQuery);
     console.log(`[unblockUser] Successfully unblocked ${targetUserIdStr}. Deleted count: ${deleteRes.deletedCount}`);

@@ -446,7 +446,9 @@ exports.logout = async (req, res) => {
 exports.logoutAllDevices = async (req, res) => {
   try {
     await ensureDbConnection();
-    const { email, password } = req.body || {};
+    const rawEmail = req.body?.email || req.body?.identifier;
+    const email = typeof rawEmail === 'string' ? rawEmail.trim() : rawEmail;
+    const password = req.body?.password;
     let userId = req.user?._id || req.user?.id;
 
     // 1. Try extracting userId from Authorization Bearer token header if available
@@ -507,28 +509,32 @@ exports.logoutAllDevices = async (req, res) => {
       { new: true }
     );
 
+    let targetSocketId = null;
+    if (global.onlineUsers && global.onlineUsers.get) {
+      targetSocketId = global.onlineUsers.get(userIdStr);
+    }
+
     if (global.onlineUsers && global.onlineUsers.delete) {
       global.onlineUsers.delete(userIdStr);
+    }
+    if (global.userLastPing && global.userLastPing.delete) {
+      global.userLastPing.delete(userIdStr);
     }
 
     const io = global.io || (req.app ? req.app.get('io') : null);
     if (io) {
-      console.log(`[AUTH CONTROLLER] Emitting session_terminated event to user room: ${userIdStr}`);
-      io.to(userIdStr).emit('session_terminated', {
+      console.log(`[AUTH CONTROLLER] Emitting session_terminated event to user room: ${userIdStr} and socketId: ${targetSocketId}`);
+      const terminationPayload = {
         message: 'Your session has been terminated because your account was logged out from all devices.',
         code: 'SESSION_TERMINATED',
         userId: userIdStr,
-      });
-      if (global.onlineUsers && global.onlineUsers.get) {
-        const socketId = global.onlineUsers.get(userIdStr);
-        if (socketId) {
-          io.to(socketId).emit('session_terminated', {
-            message: 'Your session has been terminated because your account was logged out from all devices.',
-            code: 'SESSION_TERMINATED',
-            userId: userIdStr,
-          });
-        }
+      };
+
+      io.to(userIdStr).emit('session_terminated', terminationPayload);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('session_terminated', terminationPayload);
       }
+
       io.emit('user_status', {
         userId: userIdStr,
         status: 'offline',

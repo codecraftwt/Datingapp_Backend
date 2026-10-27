@@ -91,14 +91,11 @@ const auth = async (req, res, next) => {
       }
 
       // Single-device active token enforcement:
-      // Only conflict if another device has actively established a DIFFERENT token.
-      // If currentToken is null/not yet set in DB, adopt this valid token seamlessly without logging the user out.
-      if (!user.currentToken) {
-        User.findByIdAndUpdate(userId, { $set: { currentToken: token } }).catch(() => {});
-      } else if (user.currentToken !== token) {
+      // If currentToken is null/empty or user was logged out or token does not match active DB session, block with 401
+      if (!user.currentToken || user.currentToken !== token || user.isLoggedIn === false) {
         return res.status(401).json({
-          message: 'Logged out because your account was accessed on another device or logged out from all devices.',
-          code: 'SINGLE_DEVICE_CONFLICT',
+          message: 'Your session has been terminated because your account was logged out from all devices.',
+          code: 'SESSION_TERMINATED',
         });
       }
     }
