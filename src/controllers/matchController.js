@@ -100,6 +100,14 @@ exports.likeUser = async (req, res) => {
       likedId: currentUserId
     });
 
+    // Mark any pending unread like notification from this user as read
+    await Notification.updateMany({
+      recipient: currentUserId,
+      sender: likedId,
+      type: { $in: ['like', 'superlike'] },
+      isRead: false
+    }, { isRead: true }).catch(() => {});
+
     const isMatch = !!reverseLike;
 
     // --- Trigger Push Notifications ---
@@ -225,6 +233,14 @@ exports.superLikeUser = async (req, res) => {
       likerId: likedId,
       likedId: currentUserId
     });
+
+    // Mark any pending unread like notification from this user as read
+    await Notification.updateMany({
+      recipient: currentUserId,
+      sender: likedId,
+      type: { $in: ['like', 'superlike'] },
+      isRead: false
+    }, { isRead: true }).catch(() => {});
 
     const isMatch = !!reverseLike;
 
@@ -627,6 +643,14 @@ exports.rejectLike = async (req, res) => {
       likerId: likerId,
       likedId: currentUserId
     });
+
+    // Mark any pending unread like notification from this user as read
+    await Notification.updateMany({
+      recipient: currentUserId,
+      sender: likerId,
+      type: { $in: ['like', 'superlike'] },
+      isRead: false
+    }, { isRead: true }).catch(() => {});
 
     return res.status(200).json({
       message: 'Like rejected/dismissed successfully.'

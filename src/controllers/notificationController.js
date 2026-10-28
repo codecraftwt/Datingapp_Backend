@@ -1,5 +1,6 @@
 const Notification = require('../models/Notification');
 const Message = require('../models/Message');
+const Match = require('../models/Match');
 
 /**
  * Get unread notifications for logged in user (called on login/app launch)
@@ -29,6 +30,44 @@ exports.getUnreadNotifications = async (req, res) => {
         if (unreadMsgCount === 0) {
           await Notification.findByIdAndUpdate(notif._id, { isRead: true });
         }
+      }
+    }
+
+    // 1b. Sync & cleanup: like & superlike notifications (deduplicate and remove stale likes)
+    const unreadLikeNotifs = await Notification.find({
+      recipient: userId,
+      type: { $in: ['like', 'superlike'] },
+      isRead: false,
+    }).sort({ createdAt: -1 });
+
+    const seenLikerIds = new Set();
+    for (const notif of unreadLikeNotifs) {
+      const likerId = notif.sender || notif.data?.senderId || notif.data?.userId;
+      if (!likerId) {
+        await Notification.findByIdAndUpdate(notif._id, { isRead: true });
+        continue;
+      }
+      const likerIdStr = likerId.toString();
+
+      // Deduplicate: If multiple unread notifications from same liker exist, mark older ones as read
+      if (seenLikerIds.has(likerIdStr)) {
+        await Notification.findByIdAndUpdate(notif._id, { isRead: true });
+        continue;
+      }
+      seenLikerIds.add(likerIdStr);
+
+      // Check if this liker still actively likes the recipient in Matches collection
+      const activeLike = await Match.findOne({ likerId, likedId: userId });
+      if (!activeLike) {
+        await Notification.findByIdAndUpdate(notif._id, { isRead: true });
+        continue;
+      }
+
+      // Check if current user already liked/swiped them (already handled or matched)
+      const userSwipedThem = await Match.findOne({ likerId: userId, likedId: likerId });
+      if (userSwipedThem) {
+        await Notification.findByIdAndUpdate(notif._id, { isRead: true });
+        continue;
       }
     }
 
